@@ -1,0 +1,327 @@
+我建议：继续推进，但把第二轮方法升级成“Moment adequacy + uncertainty/variance”双因素框架，并立即做一套全新的 confirmatory experiments。 RHC Study J 可以继续作为 real-data 补充，但它不决定主线，不需要等它来决定下一步。
+
+关键原因是：你们这次已经用 exact DGP 很强地证明了 moment discrepancy 确实在测 bridge bias——0.86/0.90/0.83 这些相关性已经足够成为一个重要 finding；失败的只是“拿 bias diagnostic 直接当 total causal risk”。而当前 HTE evaluation 文献恰好越来越强调这一点：AISTATS 2025 明确指出，HTE estimator comparison 如果忽略评价不确定性可能导致错误判断；ICLR 2026 更进一步做了 uncertainty-aware relative-error evaluation framework。 同时 UAI 2026 已经在 proximal/IV 里证明“uncertainty-aware causal learning + model selection”本身是一个现实需求。
+
+所以现在最合理的逻辑是：
+
+Identifying moments tell us whether a bridge is biased / structurally adequate; uncertainty tells us whether that approximately adequate estimator is statistically usable.
+
+而不是：
+
+one scalar moment score should magically predict everything.
+
+我建议的新主方法：先筛 bias，再选 variance
+
+不要直接把探索性的
+
+D
+h
+	​
+
+D
+q
+	​
+
+×CI width
+
+变成正式方法。它虽然结果很好，但理论上“bias × variance”不是自然的 MSE decomposition，很容易被 reviewer 问为什么相乘。
+
+更干净的做法是设计成 two-stage selection：
+
+Step 1：Moment adequacy screening
+
+对 candidate m 分别做 held-out outcome/treatment bridge moment test：
+
+H
+h,m
+	​
+
+:E[R
+m
+	​
+
+g(V,X)]=0,
+H
+q,m
+	​
+
+:E[S
+m
+	​
+
+f(W,X)]=0.
+
+你们现在已经有 RFF/MMR machinery。
+
+关键是 DR 结构告诉我们：只要 h 或 q 一边足够正确，orthogonal remainder 就可能很小。所以不能要求“两边都 pass”。
+
+反过来，只有当 h 和 q 两边都明显违反 identifying moments 时，才有强理由淘汰这个 candidate。
+
+统计上可以做成 intersection-union screening：
+
+p
+DR,m
+	​
+
+=max(p
+h,m
+	​
+
+,p
+q,m
+	​
+
+).
+
+只有两侧都 reject 时 candidate 才被判为 moment-inadequate。
+
+这和你们已经证明的 product-error mechanism 是完全同一条理论线，而不是新拼一个 heuristic。
+
+Step 2：Efficiency / variance selection
+
+在通过 moment adequacy screening 的 candidates 中，再选不确定性最小的。
+
+ATE 场景已经非常直接：
+
+Var
+(
+θ
+^
+m
+	​
+
+)=
+n
+Var
+(ψ
+im
+	​
+
+)
+	​
+
+,
+
+直接使用 cross-fitted OOF pseudo-outcome / influence-function SE 或 CI width。
+
+于是规则变成：
+
+先排除明显有 bias/identification 问题的 estimator，再在 empirically adequate estimators 中选最精确的。
+
+这个故事比 product × CI width 强得多：
+
+Moment adequacy→Efficiency selection
+	​
+
+
+它实际上就是 proximal 版的：
+
+among estimators that satisfy the identifying restrictions, prefer the statistically efficient one.
+
+为什么这条比旧主线更强
+
+你们 Pilot 已经得到一个非常漂亮的三段科学发现：
+
+Finding 1 — Moments measure bridge bias.
+
+ρ(D
+h
+	​
+
+,∥
+h
+^
+−h∥)=0.86
+ρ(D
+q
+	​
+
+,∥
+q
+^
+	​
+
+−q∥)=0.90
+ρ(D
+h
+	​
+
+D
+q
+	​
+
+,true bridge-error product)=0.83
+
+这不是失败，是强 positive result。
+
+Finding 2 — Bias adequacy is not total causal risk.
+
+sieve2/3 可以 moment residual 很小，但 variance 巨大，ATE error 甚至 5–11。
+
+这个发现本身很有意思：
+
+A bridge can satisfy identifying moments well and still be a poor finite-sample causal estimator.
+
+Finding 3 — Reliability requires two dimensions.
+
+exploratory moment × CI-width 在所有 families 上 Spearman 已经达到 0.67–0.75。
+
+所以很明显，缺失的信息就是 uncertainty。
+
+这其实已经构成了一个比原来更清楚的论文 tension。
+
+现在不要做的三件事
+
+第一，不要把当前 HOLD 当成项目失败。
+
+这个 gate 正确地阻止了一个错误 headline：
+
+moment residual alone selects the best estimator.
+
+很好，它本来就应该 FAIL。
+
+第二，不要重新跑旧 pilot 去调 product score。
+
+当前结果永久冻结成：
+
+Pilot-1: Moment-only selection fails because it is variance-blind.
+
+以后它反而是很漂亮的 motivation / ablation。
+
+第三，不要直接把 post-hoc product × CI-width 宣布为 MV-OPM v2。
+
+把它保留为：
+
+exploratory evidence motivating variance-aware validation.
+
+然后用新 seeds 做新的正式 confirmatory test。
+
+新一轮实验我会怎么设计
+
+不需要再次做特别繁琐的阶段审批，直接让 agent 改代码然后全量跑。
+
+新正式方法
+
+暂时可以内部叫：
+
+Moment-Screened Efficiency Selection (MSES)
+
+或者仍然保持 MV-OPM 名字。
+
+对于 candidate m：
+
+D_h, D_q
+p_h, p_q
+p_DR = max(p_h,p_q)
+specification screening
+survivors 中选 minimum uncertainty
+全部不通过 → abstain
+
+同时保留这些 baseline：
+
+fixed sieve1
+fixed kernel
+original product selector
+h only
+q only
+sum
+random
+oracle
+exploratory product×width
+新的 screen→variance
+如果实现成本合理，加现有 CATE evaluation/model-selection baseline
+
+这一点很重要，因为 Causal Q-Aggregation 已经有 CATE oracle-regret theory，甚至论文明确说提供 IV/unobserved-confounding extension；所以我们绝对不能泛称“第一个 hidden-confounding model selector”。
+
+我们的区别必须是：
+
+proximal bridge identifying restrictions themselves are used as an adequacy screen before uncertainty-aware selection.
+
+第二轮 confirmatory seeds
+
+这次不需要把所有东西再炸成超级大矩阵。
+
+我建议：
+
+Study	New final seeds
+Exact DGP mechanism	100–200
+S1	50
+S2	50
+E9 nonlinear	50
+HAMD semi-synth	50
+confounding sweep	30/config
+proxy corruption	30/config
+broken proxies	50/config
+sample size	30/config
+
+全部用新的 seed bank。
+
+旧 394 pilot 永久作为 development/pilot evidence，不参与新 confirmatory significance claims。
+
+特别重要：ATE 和 CATE 要分开
+
+这里我建议 agent 不要再混着讲。
+
+当前 CI width 很自然对应 ATE estimator uncertainty。
+
+因此第二轮首先把：
+
+ATE estimator selection
+
+证明扎实。
+
+对于真正的 CATE/PEHE selection，不能简单拿 ATE CI width 当 variance proxy。
+
+ICLR 2026 已经专门构造了 relative-error evaluator 来解决 HTE estimator comparison，因为真实 τ(x) 不可见，而普通 absolute-error surrogate 本身有 nuisance uncertainty。
+
+因此对于 CATE 有两个选择：
+
+短路径：
+这轮明确把主 selection theorem/experiment 限定为 ATE / arm-wise mean causal effect estimator selection，同时把 moment diagnostic 本身证明对 CATE bridge learning也有用。
+
+高上限路径：
+进一步把 uncertainty-aware relative CATE error evaluation 与 proximal pseudo-outcome/bridge machinery结合，做真正的 proximal HTE estimator evaluation。
+
+后者明显更有 ICLR 潜力，但也属于下一层方法贡献。
+
+还有一个最新文献风险必须注意
+
+UAI 2026 的 Instrumental and Proximal Causal Inference with Gaussian Processes 已经明确把 proximal uncertainty quantification 和 model selection 放在一起：posterior variance 做 epistemic uncertainty，marginal likelihood 做 model selection，并用 accuracy–rejection curves 验证 uncertainty 是否有决策价值。
+
+所以新 paper 不能写：
+
+Existing proximal methods provide no uncertainty-aware model selection.
+
+会被直接打脸。
+
+应该写得更准确：
+
+existing uncertainty-aware proximal methods are tied to particular probabilistic/kernel formulations; our question is whether model-agnostic identifying-moment adequacy can audit heterogeneous bridge families and separate structural bias from finite-sample uncertainty.
+
+这反而更漂亮。
+
+我现在会怎么拍板
+
+不是 a / b / c 三选一。
+
+Study J 让它完成并收进报告，但不要等它决定方向。
+
+然后立即开始新的 confirmatory work，但不是简单验证 bias×variance product，而是：
+
+Moment adequacy screening+uncertainty-aware efficiency selection
+	​
+
+
+当前旧结果则正式提升成主 finding：
+
+Moment violations are strong label-free diagnostics of proximal bridge bias, but bias-only validation is insufficient for causal model selection because it is blind to estimator variance.
+
+这句话我认为比原先：
+
+moment product selects the best estimator
+
+科学上更有意思，也更可信。
+
+而且它跟 2025–2026 HTE evaluation / proximal uncertainty 文献的发展方向是对得上的。
+
+如果你现在要继续，我建议下一条直接给 Agent 一个非常短的纠偏指令：保留所有当前结果不动，新增 moment-screen → variance-select，使用全新 seeds，直接跑第二轮 confirmatory matrix。没必要再写一份几十页 planning prompt。

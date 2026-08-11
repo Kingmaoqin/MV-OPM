@@ -28,7 +28,17 @@ class _Basis:
         self.poly = PolynomialFeatures(degree=degree, include_bias=False)
         self.scaler_out = StandardScaler()
 
+    MAX_FEATURES = 6000    # guard: prevents polynomial blow-up (e.g. deg-3 on 69-dim -> ~57k feats)
+
     def fit(self, A):
+        n_in = A.shape[1]
+        if getattr(self.poly, "degree", 1) >= 2:
+            from math import comb
+            est = comb(n_in + self.poly.degree, self.poly.degree) - 1
+            if est > self.MAX_FEATURES:
+                raise ValueError(f"polynomial sieve degree {self.poly.degree} infeasible for "
+                                 f"{n_in}-dim input (~{est} features > {self.MAX_FEATURES}); "
+                                 "use a lower degree / kernel candidate on high-dim covariates")
         P = self.poly.fit_transform(self.scaler_in.fit_transform(A))
         self.scaler_out.fit(P)
         return self

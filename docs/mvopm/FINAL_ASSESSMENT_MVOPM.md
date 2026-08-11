@@ -41,7 +41,12 @@ result; the variance-aware direction (D/exploratory) is the natural fix.
 **G. Does it persist across settings?**
 The *bias-measurement* result is robust (mechanism DGP). The *selection-vs-naive* benefit persists
 across S1/S2/nonlinear/HAMD. The *near-oracle selection* and *abstention* claims do **not** hold in
-any family. Real RHC (Study J) is reported for split-to-split stability only (no oracle).
+any family. **Real RHC (Study J, 25 repeated splits, no oracle): the product selector chose
+`sieve1_sieve1` in 100% of splits (perfectly stable), giving ATE = −2.07 days (sd 0.70; median CI
+[−2.93, −0.97]; ESS 2104; max q 18.7)** — literature-consistent (RHC shortens survival) and
+well-behaved. So the *stability* of the selected estimator on real data is a positive result, even
+though synthetic near-oracle selection is not achieved. (Repeated splits are algorithmic stability,
+not independent replications.)
 
 **H. Strongest legitimate final thesis supported by the evidence**
 > **Held-out proximal identifying-moment violations are a reliable, counterfactual-label-free measure

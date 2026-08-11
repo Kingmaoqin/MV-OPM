@@ -87,6 +87,9 @@ def rhc_row(seed: int, cfg: SelCfg) -> dict:
     from ...data.rhc import load_rhc
     from ...validation.selector import compute_scores, select
     ds = load_rhc()
+    # high-dim covariates (p=67): high-degree polynomial sieves are inapplicable (feature blow-up),
+    # so the candidate library for real high-dim X excludes sieve2/sieve3.
+    cfg.candidate_names = ["kernel_kernel", "sieve1_sieve1", "kernel_sieve1", "sieve1_kernel"]
     rows = evaluate_candidates_oof(ds, cfg)
     scores = compute_scores(rows, cfg.kind)["product"]
     sel = select(scores)
