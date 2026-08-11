@@ -75,7 +75,9 @@ def evaluate_candidates_oof(ds, cfg: SelCfg) -> dict:
             err = {"pehe": float("nan"), "ate_err": float("nan")}      # real data: no oracle
         qd = q_sanity(q_oof[nm], ds.T, K)
         D = {key: float(np.mean([d[key] for d in D_acc[nm]])) for key in D_acc[nm][0]}
-        rows[nm] = {**D, **err,
+        # observed-data VARIANCE signal (no oracle): variance of the OOF pseudo-outcome contrast
+        po_var = float(np.var(phi[nm][:, 1] - phi[nm][:, 0]))
+        rows[nm] = {**D, **err, "po_var": po_var,
                     "ate1": ate[1]["ate"], "ate1_lo": ate[1]["ci_low"], "ate1_hi": ate[1]["ci_high"],
                     "q_balance": float(np.mean([abs(qd[k]["En_1Tk_qk"] - 1.0) for k in range(K)])),
                     "ess": float(np.mean([qd[k]["ess"] for k in range(K)])),

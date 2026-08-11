@@ -57,6 +57,29 @@ not independent replications.)
 This is a *model-validation framework* contribution, explicitly not a "near-oracle selector" or a
 "better bridge" claim.
 
+## Exploratory validation of the prereg direction (POST-HOC — NOT confirmatory)
+Run on **fresh seeds 500–514** (disjoint from the pilot dev bank 0–19 that generated the
+hypothesis), primary target = ATE error (`results/mvopm/EXPLORATORY_BIASVAR.md`,
+`scripts/mvopm_exploratory.py`). Adding an observed-data variance signal (OOF pseudo-outcome
+contrast variance) to the moment diagnostics:
+
+| score | median oracle-ratio (ATE) | mean Spearman(score, ATE err) |
+|---|---|---|
+| product (prereg, bias only) | 1.26 | 0.23 |
+| **biasvar (bias × / + variance)** | **1.04** | **0.73** |
+| variance_only | mixed (fails nonlinear/HAMD) | 0.11–0.51 |
+| fixed_sieve1 (strong baseline) | 1.03 | 0.41 |
+
+Per-scenario rank Spearman rises to **0.70 / 0.73 / 0.75 / 0.73** (S1/S2/nonlinear/HAMD; all ≥0.70,
+vs 0.09–0.44 for product-alone), and the oracle-ratio falls to ~1.04 (**near-oracle**), matching the
+strong fixed-sieve1 baseline *as a data-driven selector*. `variance_only` alone is insufficient — it
+is the **combination** of identifying-moment adequacy (bias) and estimation variance that works,
+consistent with error = bias + variance. **This is exploratory (the score was chosen after the
+pilot); it cannot be reported as confirmatory (§15/§29), but it strongly de-risks a preregistered
+confirmatory study.** Honest caveat: sieve1 is oracle-best in most tested scenarios, so beating
+fixed-sieve1 requires settings where the oracle-best candidate *varies* (e.g. regimes where kernel or
+mixed candidates win) — a required ingredient of the confirmatory design.
+
 ## Is this ICLR-main-track strong as-is?
 **No — HOLD.** As it stands the confirmed contribution (moment = valid bridge-bias diagnostic) is
 sound and useful but narrow, and the headline application (near-oracle proximal-estimator selection)
