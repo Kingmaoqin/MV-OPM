@@ -1,0 +1,14 @@
+experiment: E10
+seeds: [0, 1, 2, 3, 4, 5]
+n_grid: [2000, 4000, 8000]
+tau_slope: 1.0                    # tau(x) = 2 + x_1 (heterogeneous), ATE = 2
+tx_coef: 0.0                       # treatment depends only on U -> uniform overlap across x_1
+n_bins: 5
+grid: [-1.0, -0.5, 0.0, 0.5, 1.0]
+bw_scale: 1.8
+device: cpu
+bridge:
+  max_epochs: 150
+  patience: 35
+  eval_every: 3
+  batch_size: 1024

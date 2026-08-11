@@ -1,0 +1,13 @@
+experiment: E4
+dataset: rhc                # rhc (primary, has proxies) | hamd (secondary, no proxies)
+outcome: Y_survival_days_30
+seeds: [0, 1, 2]           # cross-fit seeds for stability on the fixed real dataset
+device: cpu
+bridge:
+  max_epochs: 150
+  patience: 35
+  eval_every: 3
+  batch_size: 1024
+head:
+  max_epochs: 200
+  patience: 20

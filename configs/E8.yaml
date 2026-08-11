@@ -1,0 +1,17 @@
+experiment: E8
+seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+n_train: 2500
+n_test: 2500
+corruption_kinds: [additive, missing]
+# wider proxy-strength range: mild levels alone barely move PEHE (graceful degradation),
+# so rho_min cannot track PEHE; strong corruption exposes the proxy-strength -> PEHE link.
+corruption_levels: [0.0, 0.15, 0.3, 0.5, 0.75]
+device: cpu
+bridge:
+  max_epochs: 130
+  patience: 30
+  eval_every: 3
+  batch_size: 1024
+head:
+  max_epochs: 160
+  patience: 15

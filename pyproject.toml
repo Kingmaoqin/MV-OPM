@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opm"
+version = "2.0.0"
+description = "OPM v2 — Orthogonal Proximal Moments: multi-treatment proximal doubly-robust CATE learner"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "econml==0.16.0",
+    "scipy",
+    "matplotlib",
+    "pyyaml",
+    "pyarrow",
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["opm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

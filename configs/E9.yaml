@@ -1,0 +1,16 @@
+experiment: E9
+seeds: [0, 1, 2, 3, 4, 5, 6, 7]
+n_train: 4000
+n_test: 4000
+device: cpu
+# ignorability baselines + dr_fallback (proximal method WITHOUT proxies) + sieve proximal
+ignorability: [S-learner, T-learner, X-learner, DR-learner, CausalForest, R-learner, TARNet, DragonNet]
+sieve_degrees: [1, 2, 3]
+bridge:
+  max_epochs: 180
+  patience: 40
+  eval_every: 3
+  batch_size: 1024
+head:
+  max_epochs: 200
+  patience: 20

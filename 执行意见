@@ -1,0 +1,418 @@
+# Agent Prompt — Build the OPM-v2 Research Codebase from Scratch
+
+You are an expert research engineer in causal machine learning. Your task is to build, from
+an empty repository, the complete codebase and experiment suite for a method called
+**OPM (Orthogonal Proximal Moments) v2**: a multi-treatment proximal doubly-robust CATE
+learner with an optional diffusion-distillation module for distributional counterfactuals.
+
+You have NO access to any prior implementation. Everything you need — mathematical
+definitions, data-generating processes with exact constants, algorithms, baselines,
+experiments, and numeric acceptance criteria — is specified below. Where a design decision
+is not specified, choose the simplest defensible option and record it in `DECISIONS.md`.
+
+---
+
+## 0. Mission and non-negotiable design principles
+
+1. **Sequential pipeline, never joint training.** The method has three stages. Stage 1
+   (bridge estimation) and Stage 2 (pseudo-outcome regression) are trained strictly
+   sequentially. Stage 3 (generator) is optional and trains with Stages 1–2 frozen.
+   There is NO joint objective mixing stages, NO learned loss weights, NO loss-balancing
+   controller of any kind.
+2. **Exactly one tunable hyperparameter in the core method** (`lambda_distill`, only used
+   if the generator is enabled). Kernel bandwidths use the median heuristic. `q_max = 50`
+   is fixed. Network sizes/optimizers are fixed defaults given below.
+3. **Cross-fitting is mandatory** for all nuisance functions (bridges). Pseudo-outcomes
+   are always computed out-of-fold.
+4. **Honest regimes.** If proxies (W, V) are absent, the method must degrade to a standard
+   multi-treatment DR-learner (plug-in: h_k -> m_k(X), q_k -> 1/pi_k(X)). No "learned
+   proxies", ever.
+5. **Reproducibility.** Every experiment runs from a single command with a config file and
+   a seed; all randomness (numpy/torch/python) is seeded; DGP matrices are generated once
+   from a meta-seed and stored.
+
+---
+
+## 1. Mathematical specification
+
+### 1.1 Setup and notation
+
+- Observed data: O = (X, T, Y, W, V), i.i.d., n samples.
+- X in R^p: observed covariates. T in {t_0, ..., t_{K-1}}: discrete treatment, t_0 is the
+  reference arm. Y in R: outcome. U: unobserved confounder (never observed).
+- W in R^{d_w}: outcome-inducing proxy (associated with U; no direct effect on Y given
+  (U, X, T); not affected by T). V in R^{d_v}: treatment-inducing proxy (associated with
+  U; no direct effect on Y given (U, X, T)).
+- Potential outcomes Y(t_k); targets:
+  mu_k(x) = E[Y(t_k) | X = x],  tau_k(x) = mu_k(x) - mu_0(x)  for k = 1..K-1.
+
+### 1.2 Assumptions (state these in code docstrings; they drive the DGP designs)
+
+- A1 consistency: Y = Y(T).
+- A2 positivity: P(T = t_k | U, X) >= c > 0 for all k.
+- A3 latent ignorability: Y(t) ⟂ T | (U, X).
+- A4 proxy structure: W ⟂ (T, V) | (U, X); V ⟂ Y | (U, X, T).
+- A5 arm-wise completeness (both directions) for each t_k.
+- A6 regularity for the bridge integral equations.
+
+### 1.3 Bridge functions (Stage 1)
+
+For each arm k = 0..K-1:
+
+- Outcome bridge h_k(W, X) solves
+  (B1)   E[ Y - h_k(W, X) | V, X, T = t_k ] = 0.
+- Treatment bridge q_k(V, X) solves
+  (B2)   E[ 1{T = t_k} * q_k(V, X) - 1 | W, X ] = 0.
+  (Interpretation: proximal inverse-propensity weight; q_k >= 1.)
+
+### 1.4 Doubly-robust pseudo-outcome (Stage 2 input)
+
+(STAR)  phi_k(O) = 1{T = t_k} * q_k(V, X) * ( Y - h_k(W, X) ) + h_k(W, X).
+
+Identification (the paper's Theorem 1, arm-wise extension of Miao et al. 2018 / Cui et
+al. 2023): under A1–A6, mu_k(x) = E[phi_k | X = x], hence
+tau_k(x) = E[ phi_k - phi_0 | X = x ].
+Rate double robustness (Theorem 2): conditional bias of phi_k is bounded by
+||h_hat_k - h_k|| * ||q_hat_k - q_k|| (product of L2 errors).
+
+### 1.5 Bridge estimation losses (kernel moment / U-statistic; Dikkala et al. 2020,
+### NMMR-style closed form — no adversarial inner loop)
+
+For arm k, with a Gaussian kernel Kern(a, b) = exp( -||a - b||^2 / (2 * bw^2) ):
+
+- L_h(h_k) = (1 / (B(B-1))) * sum_{i != j in batch} R_i * R_j * Kern(z_i, z_j)
+  where R_i = 1{T_i = t_k} * ( Y_i - h_k(W_i, X_i) ),  z_i = concat(V_i, X_i) after
+  per-feature standardization.
+- L_q(q_k) = (1 / (B(B-1))) * sum_{i != j} S_i * S_j * Kern(u_i, u_j)
+  where S_i = 1{T_i = t_k} * q_k(V_i, X_i) - 1,  u_i = concat(W_i, X_i) standardized.
+
+Implementation requirements:
+- Bandwidth: median heuristic computed once on the training fold (median pairwise
+  distance of the standardized instrument inputs).
+- Batch size >= 512 so pairwise terms are plentiful; compute the full BxB kernel matrix
+  per step and zero the diagonal.
+- Parametrization: q_k(V, X) = 1 + softplus(g_k(V, X)), then clip at q_max = 50.
+- Networks: shared trunk MLP (3 x 128, ReLU) over concat(inputs, arm_embedding(8)),
+  with two heads (h scalar; q scalar pre-softplus). One trunk for h across arms, one for
+  q across arms (parameter sharing helps rare arms).
+- Optimizer: AdamW, lr 1e-3, weight decay 1e-4, up to 300 epochs, early stopping on a
+  validation moment-residual diagnostic (Section 6.1), patience 30. Keep an EMA (0.99)
+  copy of weights; use EMA weights for all downstream predictions.
+
+### 1.6 Cross-fitting and Stage 2
+
+- L = 5 folds. For fold l: train (h, q) on the other folds; predict on fold l. Assemble
+  out-of-fold phi_hat_k(O_i) for every i and every k (note: the h_k(W_i, X_i) term is
+  defined for all samples, not only those with T_i = t_k). Cache to
+  `artifacts/{exp}/{seed}/pseudo_outcomes.parquet`.
+- Stage 2: define D_i = ( phi_hat_1(O_i) - phi_hat_0(O_i), ..., phi_hat_{K-1} - phi_hat_0 )
+  in R^{K-1}. Fit tau_hat: R^p -> R^{K-1} by MSE regression of D on X.
+  (STARSTAR)  tau_hat = argmin (1/n) sum_i || D_i - tau_psi(X_i) ||^2.
+  Network: MLP 3 x 256 ReLU, AdamW lr 1e-3, early stop on val MSE (10% split), standardize X.
+- ATE contrast k and its CI: with psi_i = phi_hat_k(O_i) - phi_hat_0(O_i),
+  ATE_hat_k = mean(psi), SE = sd(psi)/sqrt(n), CI95 = ATE_hat_k +/- 1.96*SE. Always report.
+- Also fit g0_hat(x) = regression of phi_hat_0 on X (same MLP recipe); define
+  mu_hat_k(x) = g0_hat(x) + tau_hat_k(x) (with tau_hat_0 = 0). Used by Stage 3 and policy
+  metrics.
+
+### 1.7 Stage 3 (optional module): conditional diffusion with mean distillation
+
+Purpose: distributional counterfactual samples whose MEAN is debiased by the proximal
+estimate (generative baselines like DiffPO assume ignorability and have biased means
+under unobserved confounding).
+
+- Generator G: a standard conditional DDPM over scalar y, conditioning vector
+  c = concat(MLP_embed(X), arm_embedding). T_steps = 200, cosine schedule, eps-prediction
+  MLP (4 x 256), trained on FACTUAL pairs (X_i, T_i, Y_i) with the usual denoising loss
+  L_ddpm.
+- Distillation loss: every 10 optimizer steps, draw M = 16 samples per (X_i, arm k) for a
+  minibatch subset (size 64) and add
+  L_distill = mean_{i,k} ( mean_M G(X_i, t_k) - mu_hat_k(X_i) )^2.
+- Total: L_gen = L_ddpm + lambda_distill * L_distill, default lambda_distill = 1.0
+  (the only tunable hyperparameter; sweep {0.1, 1, 10} in E6).
+- Stages 1–2 frozen. Document the known limitation: distillation debiases the mean; higher
+  moments inherit the factual conditional shape (evaluated honestly in E7).
+
+### 1.8 No-proxy degradation mode
+
+`method.mode = "dr_fallback"`: h_k -> m_hat_k(X) (per-arm outcome regression),
+q_k -> 1 / pi_hat_k(X) (multinomial logistic or MLP softmax propensity, clipped at 1/50).
+Same cross-fitting, same (STAR)/(STARSTAR). This is what runs on real data without proxies.
+
+---
+
+## 2. Repository and engineering standards
+
+```
+opm/
+├── pyproject.toml            # torch>=2.2, numpy, pandas, scikit-learn, econml, scipy,
+│                             # matplotlib, pyyaml, pytest
+├── DECISIONS.md
+├── opm/
+│   ├── dgp/
+│   │   ├── linear_gaussian.py    # E1/E2 closed-form DGP (Sec 3.1)
+│   │   ├── synthetic_main.py     # S1, S2 (Sec 3.2) + corruption transforms (Sec 3.3)
+│   │   └── semisynth.py          # real covariates + simulated U/T/Y/W/V (Sec 3.5)
+│   ├── data/
+│   │   └── rhc.py                # loader for data/raw/rhc.csv (Sec 3.4)
+│   ├── bridges/
+│   │   ├── kernel_moment.py      # U-statistic losses, median heuristic, EMA
+│   │   └── networks.py
+│   ├── estimator/
+│   │   ├── crossfit.py           # fold bookkeeping (leakage-proof, unit-tested)
+│   │   ├── pseudo_outcome.py     # (STAR)
+│   │   └── tau_head.py           # (STARSTAR), g0_hat, ATE CIs
+│   ├── generator/
+│   │   ├── ddpm.py
+│   │   └── distill.py
+│   ├── baselines/                # Sec 4
+│   ├── diagnostics/              # Sec 6.1
+│   ├── eval/
+│   │   ├── metrics.py            # Sec 6.2
+│   │   └── stats.py              # Sec 6.3
+│   └── run.py                    # python -m opm.run experiment=E3 scenario=S1 seed=0
+├── configs/                      # one YAML per experiment
+├── tests/                        # Sec 7
+└── results/{exp}/                # raw.csv per seed + REPORT.md + LaTeX tables + figures
+```
+
+- Determinism: set numpy/torch/python seeds from config; `torch.use_deterministic_algorithms(True)`
+  where feasible.
+- Every experiment writes `results/{exp}/REPORT.md` comparing outcomes against the
+  acceptance criteria of Section 5 and stating PASS/FAIL per criterion.
+- Runtime budget: single modern GPU; one seed of E3/S1 end-to-end (OPM + all baselines)
+  must finish in < 30 min. Profile and optimize the kernel loss first if exceeded.
+
+---
+
+## 3. Data-generating processes (exact specifications)
+
+All random matrices below are drawn once with meta-seed 12345, saved under
+`opm/dgp/params/`, and reused across seeds. Per-run seeds only control sampling of
+(U, X, noises).
+
+### 3.1 E1/E2 DGP: linear-Gaussian with CLOSED-FORM outcome bridge (unit-test anchor)
+
+- U ~ N(0, 1); X ~ N(0, I_5), independent of U.
+- W = 1.2 * U + eps_w,  eps_w ~ N(0, 0.5^2).
+- V = 1.0 * U + eps_v,  eps_v ~ N(0, 0.5^2).
+- T = 1{ 0.8*U + 0.5*X_1 + eps_t > 0 },  eps_t ~ N(0, 1)   (binary, K = 2).
+- Y = 2.0 * T + 1.5 * U + beta_x' X + eps_y,  beta_x = (1, -1, 0.5, 0, 0),
+  eps_y ~ N(0, 1).
+
+Ground truth: ATE = 2.0; tau(x) = 2.0 (constant). Closed-form outcome bridge:
+  h_t(W, X) = 2.0 * t + (1.5 / 1.2) * W + beta_x' X = 2t + 1.25 W + beta_x' X.
+(Verify analytically in a docstring: E[Y - h_t | U, X, T = t] = 1.5U - 1.25*1.2*U = 0.)
+No closed form is required for q; test q via its moment identity instead (Sec 7).
+
+### 3.2 Main synthetic scenarios
+
+**S1 (K = 4 multinomial), defaults n = 4000, p = 10:**
+- U ~ N(0, I_2); X ~ N(0, I_10), independent.
+- W = A_W U + 0.3 * tanh(B_W U) + eps_w in R^2, eps_w ~ N(0, 0.25 I).
+- V = A_V U + 0.3 * tanh(B_V U) + eps_v in R^2, eps_v ~ N(0, 0.25 I).
+  (A_W, B_W, A_V, B_V: 2x2, entries iid N(0,1), meta-seeded, then column-normalized.)
+- Treatment: logits l_0 = 0; l_k = theta_k' X + c_U * gamma_k' U for k = 1..3, with
+  theta_k ~ N(0, 0.3^2 I_10), gamma_k ~ N(0, I_2) (meta-seeded), confounding strength
+  c_U = 1.0 (expose as a config knob).
+- Outcome: Y = g0(X) + tau_T(X) + beta_U' U + eps_y, eps_y ~ N(0, 1),
+  beta_U = (1.0, -0.8),
+  g0(x) = x_1 + 0.5 x_2 - 0.5 x_3^2 + tanh(x_4),
+  tau_0 = 0;  tau_1(x) = 1 + 0.6 x_1;  tau_2(x) = -0.5 + 0.8 |x_2|;
+  tau_3(x) = 0.5 x_1 x_2.
+- The DGP must return true potential-outcome means for all arms (for PEHE) and the true
+  counterfactual law P(Y(t_k) | X = x) = N( g0(x) + tau_k(x), 1 + ||beta_U||^2 )
+  (valid because U ⟂ X) — needed by E7.
+
+**S2 (multi-binary, K = 4 as 2x2 combinations):**
+- Same U, X, W, V as S1. Two binary components:
+  B_j ~ Bernoulli( sigmoid( theta_j' X + gamma_j' U ) ), j = 1, 2, independent given (X, U).
+  Arm index k = B_1 + 2 * B_2.
+- Effects: tau(b1, b2, x) = b1 * (1 + 0.5 x_1) + b2 * (-0.7 + 0.4 x_2)
+  + b1 * b2 * (0.6 - 0.3 x_1). Treat as K = 4 classes for all estimators.
+
+### 3.3 Proxy corruption transforms (applied to W, V at load time; level s in {0.1, 0.2, 0.3})
+
+- additive: + N(0, s^2 * Var_col);  missing: MCAR mask at rate s then mean-impute;
+- shift: + s * 1;  heavy-tail: replace Gaussian proxy noise with s-scaled Student-t(3).
+
+### 3.4 Real-data anchor: RHC (right heart catheterization)
+
+- Expect the user to place `rhc.csv` at `data/raw/rhc.csv` (public teaching dataset;
+  do NOT attempt to download). Binary treatment (RHC yes/no), outcome: 30-day survival.
+- Proxy split following Cui et al. (2023, JASA), Section 6: treatment-inducing proxies
+  V = (pafi1, paco21); outcome-inducing proxies W = (ph1, hema1); remaining ~70
+  covariates form X. Add a `# VERIFY against the published paper` comment — if the
+  user's copy of the paper indicates a different split, the config must make it trivial
+  to change.
+- Milestone requirement: FIRST implement a linear-sieve POR estimator (two-stage least
+  squares on polynomial bases) and confirm its ATE point estimate is a plausible small
+  negative effect on survival consistent with the proximal literature; only then run
+  OPM (dr_fallback comparison + proximal mode). Report ATE with influence-function CIs.
+
+### 3.5 Semi-synthetic on real covariates
+
+- Take X from RHC (or any user-provided covariate table via a plug-in interface with
+  column config; design for MIMIC-IV compatibility but do not assume access).
+- Simulate U in R^2, K = 4 multinomial T, Y, W, V exactly as in S1 but with real X
+  entering theta_k' X and g0 via meta-seeded random projections of the standardized
+  real covariates. Corruption scans as in 3.3.
+
+---
+
+## 4. Baselines
+
+Implement in `opm/baselines/`, each behind a common `fit(X, T, Y, W, V) / predict_cate(X)`
+interface. Multi-arm handling: one-vs-reference contrasts unless the package supports
+multiclass natively.
+
+Ignorability CATE (X only):
+- S-, T-, X-, DR-learner and Causal Forest via `econml` (pin the version).
+- R-learner: in-repo implementation (Robinson residualization with cross-fitted m, pi;
+  document the multi-arm vectorized extension as heuristic).
+- TARNet, DragonNet: in-repo PyTorch (~150 lines each; standard architectures).
+
+Proximal:
+- POR / PIPW / PDR with linear/polynomial sieves (in-repo, arm-wise; PDR uses the same
+  (STAR) with sieve-estimated bridges — this doubles as an ablation of kernel vs sieve).
+- NMMR (Kompa et al. 2022) and DFPV (Xu et al. 2021): adapt from their public GitHub
+  repos if importable; otherwise reimplement the loss per paper. ATE-oriented; report
+  ATE-only where CATE is unavailable.
+- P-learner (Sverdrup & Cui 2023): pairwise one-vs-reference extension, documented as such.
+
+Generative (E7 only): DiffPO from public code if runnable, else a conditional DDPM
+identical to Stage 3 but WITHOUT distillation (label it "factual-DDPM"; this is the
+minimal ignorability-generative comparator and is required even if DiffPO runs).
+
+Baseline tuning protocol: fixed default grids (document them), selected on validation
+factual loss only — never on test, never on causal ground truth.
+
+---
+
+## 5. Experiments and acceptance criteria
+
+Global protocol: 10 seeds (0–9) unless stated; report mean ± sd; statistics per Sec 6.3.
+
+**E1 — Consistency and rates (DGP 3.1).**
+n in {500, 1000, 2000, 4000, 8000, 16000}. Plot log-log |ATE_hat - 2| and bridge error
+||h_hat - h_true||_{L2(test)} vs n.
+ACCEPT: both curves monotone decreasing (Spearman < -0.9 across n); |ATE_hat - 2| < 0.10
+at n = 8000 (mean over seeds); linear probe of h_hat on (W, X_1..X_5, T) recovers the
+true coefficients (R^2 > 0.95 at n = 8000); CI95 empirical coverage of ATE in [0.85, 0.99].
+
+**E2 — Product-bias (rate double robustness) check (DGP 3.1).**
+Corrupt bridges with known rates: h_corr = h_true + n^{-alpha_h} * sin(X_1);
+q_corr = q_hat_bestn * (1 + n^{-alpha_q} * cos(X_2)) for (alpha_h, alpha_q) in
+{0.1, 0.25, 0.4}^2. Fit slope of log|ATE err| vs log n.
+ACCEPT: fitted slope within ±0.15 of -(alpha_h + alpha_q) for at least 7 of 9 pairs;
+corrupting ONE bridge only (other well-trained) still yields decreasing error.
+
+**E3 — Main benchmark (S1, S2 + corruption scans 3.3).**
+All baselines. Metrics: PEHE, ATE error (Sec 6.2), plus true policy value using known
+potential outcomes. Corruption scans: OPM (non-oracle) vs proximal + top-3 ignorability
+baselines.
+ACCEPT: OPM beats every ignorability baseline on PEHE in S1 and S2 with paired Wilcoxon
+p < 0.05 (BH-corrected); OPM >= sieve-PDR (kernel vs sieve gap reported either way);
+degradation under corruption is graceful (no metric jump > 2x between adjacent levels).
+If OPM does not beat ignorability baselines, STOP and debug bridges before proceeding
+(check diagnostics of Sec 6.1 first).
+
+**E4 — RHC real anchor (3.4).**
+Pipeline validation via linear POR first (milestone gate), then OPM proximal vs
+dr_fallback vs baselines. Report ATE + CI, q_hat diagnostics, ESS.
+ACCEPT: linear-POR reproduction gate passes; OPM CI overlaps the linear-POR CI; all
+weights bounded (max q_hat <= 50, En[1{T=k} q_hat_k] in [0.9, 1.1]).
+
+**E5 — Semi-synthetic on real covariates (3.5).**
+Same protocol as E3; this is the "realistic covariates + known truth" evidence.
+Compare non-oracle OPM against baselines (NEVER headline an oracle variant).
+ACCEPT: same statistical criteria as E3.
+
+**E6 — Ablations (on S1 + E5 data).**
+(a) kernel-moment vs polynomial-sieve bridges; (b) cross-fitting on/off;
+(c) q-clipping q_max in {10, 50, 200}; (d) distillation lambda in {0.1, 1, 10};
+(e) diffusion vs Gaussian-MLP generator (mean-matched); (f) dr_fallback vs proximal
+under c_U in {0, 0.5, 1, 2} — at c_U = 0 the two must agree (sanity), and the proximal
+gain must grow with c_U.
+ACCEPT: each ablation table generated with the same statistics; (f) shows the expected
+monotone pattern.
+
+**E7 — Distributional counterfactuals (S1; truth from 3.2).**
+Compare {OPM-distilled DDPM, factual-DDPM, DiffPO if runnable} on: per-arm mean bias
+|mean_M G(x, t_k) - (g0 + tau_k)(x)| and 1-Wasserstein distance to
+N(g0 + tau_k, 1 + ||beta_U||^2), averaged over a 512-point test grid.
+ACCEPT: distilled mean bias < 50% of factual-DDPM mean bias on every arm k >= 1; report
+W1 honestly including the variance mismatch (expected; it is a documented limitation).
+
+**E8 — Diagnostics validity study.**
+Across E3/E5 runs and corruption levels, correlate the Sec 6.1 diagnostics with realized
+PEHE (Spearman, per scenario).
+ACCEPT: proxy-strength rho_min and bridge residual each achieve |Spearman| > 0.4 with
+PEHE across corruption levels in at least one scenario family; report all correlations.
+
+---
+
+## 6. Diagnostics, metrics, statistics
+
+### 6.1 Diagnostics (also used for early stopping of bridges)
+- Bridge residual score: draw 100 random Fourier features g_j of the standardized
+  instrument input; report max_j | En[R_i g_j(.)] | / sd(R). Early-stop h on this
+  (validation fold), analogously for q with S_i.
+- q sanity: En[1{T = t_k} q_hat_k] (target 1); max weight; ESS_k = (sum w)^2 / sum w^2.
+- Proxy strength: regress X out of W and V (linear), CCA on residuals; report top-2
+  canonical correlations (rho_min = 2nd one).
+- Arm overlap: per-arm counts; distribution of min_k pi_hat_k(X).
+
+### 6.2 Metrics
+- PEHE = sqrt( mean_i mean_{k>=1} ( tau_hat_k(x_i) - tau_k(x_i) )^2 ).
+- ATE error = mean_{k>=1} | ATE_hat_k - ATE_k |.
+- Policy value (synthetic/semi-synth): value of argmax_k mu_hat_k(x) under TRUE potential
+  outcomes. Real data: IPW value with ONE shared cross-fitted propensity model used for
+  ALL methods (state direction of "better" explicitly in the report).
+
+### 6.3 Statistical protocol
+10 seeds; paired Wilcoxon signed-rank AND paired t-test vs the best competing method per
+(scenario, metric); Benjamini–Hochberg across scenarios; per-seed scatter saved with every
+headline table; seed-bootstrap 95% CIs on means. `eval/stats.py` implements all of this
+and every table generator must call it.
+
+---
+
+## 7. Unit tests (pytest; all must pass before any experiment is trusted)
+
+1. `test_kernel_ustat_matches_naive`: batch of 32, U-statistic loss equals a double-loop
+   reference within 1e-6.
+2. `test_bridge_closed_form`: DGP 3.1, n = 8000, single seed: linear probe of h_hat
+   achieves R^2 > 0.95 vs h_true; |ATE_hat - 2| < 0.15.
+3. `test_q_moment`: En[1{T=k} q_hat_k] in [0.9, 1.1] for both arms (DGP 3.1).
+4. `test_dr_product_bias`: with h_true and corrupted q (or vice versa), ATE error at
+   n = 8000 remains < 0.15 (double robustness smoke test).
+5. `test_crossfit_no_leakage`: assert every prediction index was absent from its
+   training folds (bookkeeping test with planted markers).
+6. `test_dgp_truth`: oracle tau plugged into PEHE gives 0; S1 counterfactual law matches
+   Monte-Carlo simulation of the DGP (KS test p > 0.01).
+7. `test_dr_fallback_equals_proximal_when_no_confounding`: c_U = 0 in S1, the two modes'
+   ATE estimates differ by < 2 * pooled SE.
+
+---
+
+## 8. Milestones (strict order; produce REPORT.md at each gate)
+
+- M0: repo skeleton + DGPs + unit tests 1, 5, 6 green.
+- M1: bridges + estimator; tests 2, 3, 4, 7 green; E1 PASS.  <- hard gate: do not
+  proceed to baselines/benchmarks until E1 passes.
+- M2: E2 PASS.
+- M3: baselines + E3; if E3 FAIL, debug via Sec 6.1 diagnostics and report findings.
+- M4: E4 (linear-POR gate first), E5.
+- M5: generator + E6, E7, E8; final consolidated LaTeX tables and figures.
+
+## 9. Do-NOT list
+
+- Do not create any joint loss across stages or any learned loss weights.
+- Do not implement "learned proxies" of any kind.
+- Do not tune anything on test data or on causal ground truth.
+- Do not headline oracle-supervised variants against baselines (oracle curves are
+  upper-bound references only, drawn as dashed lines).
+- Do not silently change DGP constants, thresholds, or acceptance criteria; any deviation
+  goes to DECISIONS.md with justification.
+- Do not fabricate results for missing baselines; mark "did not run" with the reason.

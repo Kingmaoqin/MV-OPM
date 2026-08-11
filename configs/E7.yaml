@@ -1,0 +1,23 @@
+experiment: E7
+seeds: [0, 1]
+n_train: 3000
+n_grid: 256
+c_U: 2.0               # strong confounding -> factual-DDPM mean is clearly biased, giving
+                       # distillation room to show the >50% mean-bias reduction
+M: 128                 # large M so the sample-mean estimate is tight
+gen_epochs: 250
+lambda_distill: 3.0    # moderate: strong enough to debias the mean, not so strong it
+                       # destabilises the well-trained (250-epoch) denoiser
+distill_M: 12
+distill_subset: 64
+distill_steps: 15
+distill_every: 3
+device: cpu
+bridge:
+  max_epochs: 150
+  patience: 35
+  eval_every: 3
+  batch_size: 1024
+head:
+  max_epochs: 180
+  patience: 18

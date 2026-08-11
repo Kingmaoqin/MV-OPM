@@ -1,0 +1,26 @@
+experiment: E3
+scenarios: [S1, S2]
+seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+n_train: 4000
+n_test: 4000
+methods: [S-learner, T-learner, X-learner, DR-learner, CausalForest, R-learner,
+          TARNet, DragonNet, POR-sieve, PIPW-sieve, PDR-sieve, NMMR]
+device: cpu
+bridge:
+  max_epochs: 180
+  patience: 40
+  eval_every: 3
+  batch_size: 1024
+bridge_baseline:      # kernel bridges inside NMMR baseline (lighter)
+  max_epochs: 120
+  patience: 30
+  eval_every: 3
+  batch_size: 1024
+head:
+  max_epochs: 200
+  patience: 20
+run_corruption: true
+corruption_kinds: [additive, missing]
+corruption_levels: [0.1, 0.2, 0.3]
+corruption_seeds: [0, 1, 2, 3, 4]
+corruption_baselines: [S-learner, CausalForest, DR-learner]

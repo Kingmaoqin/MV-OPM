@@ -1,0 +1,20 @@
+experiment: E6
+seeds: [0, 1, 2, 3, 4]
+n_train: 3000
+n_test: 3000
+device: cpu
+bridge:
+  max_epochs: 150
+  patience: 35
+  eval_every: 3
+  batch_size: 1024
+head:
+  max_epochs: 180
+  patience: 18
+# ablation knobs
+q_max_grid: [10, 50, 200]
+lambda_grid: [0.1, 1.0, 10.0]
+cu_grid: [0.0, 0.5, 1.0, 2.0]       # E6(f) — key ablation for reviewers
+sieve_degrees: [1, 2]
+gen_epochs: 120
+gen_test_grid: 256
