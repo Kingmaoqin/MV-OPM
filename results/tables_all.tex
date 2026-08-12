@@ -1,0 +1,29 @@
+% E3 main benchmark PEHE (mean +/- sd over seeds)
+\begin{tabular}{lcc}
+\hline
+Method & S1 & S2 \\ \hline
+OPM & 0.525$\pm$0.062 & 0.420$\pm$0.057 \\
+S-learner & 0.611$\pm$0.022 & 0.805$\pm$0.050 \\
+T-learner & 0.858$\pm$0.039 & 1.098$\pm$0.057 \\
+X-learner & 0.699$\pm$0.036 & 0.968$\pm$0.057 \\
+DR-learner & 0.797$\pm$0.078 & 0.995$\pm$0.116 \\
+CausalForest & 0.574$\pm$0.029 & 0.902$\pm$0.065 \\
+R-learner & 0.875$\pm$0.025 & 1.101$\pm$0.064 \\
+TARNet & 0.678$\pm$0.051 & 0.910$\pm$0.072 \\
+DragonNet & 0.686$\pm$0.054 & 0.922$\pm$0.069 \\
+POR-sieve & 0.549$\pm$0.029 & 0.366$\pm$0.050 \\
+PIPW-sieve & 0.558$\pm$0.173 & 0.711$\pm$0.341 \\
+PDR-sieve & 0.490$\pm$0.059 & 0.369$\pm$0.037 \\
+NMMR & 0.511$\pm$0.020 & 0.436$\pm$0.039 \\
+\hline
+\end{tabular}
+
+% E4 RHC ATE (days), negative = RHC shortens survival
+\begin{tabular}{lccc}
+\hline
+Estimator & ATE & CI low & CI high \\ \hline
+linear-POR (gate) & -1.940 & -2.734 & -1.147 \\
+OPM proximal & -1.319 & -1.855 & -0.782 \\
+OPM dr_fallback & -1.078 & -1.689 & -0.468 \\
+\hline
+\end{tabular}

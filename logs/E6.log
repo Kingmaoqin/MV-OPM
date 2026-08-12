@@ -1,0 +1,11 @@
+E6(a) done
+E6(b) done
+E6(c) done
+E6(f) c_U=0.0 prox_ATEerr=0.100 fb_ATEerr=0.142 gap=0.042
+E6(f) c_U=0.5 prox_ATEerr=0.068 fb_ATEerr=0.276 gap=0.208
+E6(f) c_U=1.0 prox_ATEerr=0.114 fb_ATEerr=0.464 gap=0.351
+E6(f) c_U=2.0 prox_ATEerr=0.230 fb_ATEerr=0.570 gap=0.340
+E6(d) lambda=0.1 mean_bias=1.2950
+E6(d) lambda=1.0 mean_bias=2.0830
+E6(d) lambda=10.0 mean_bias=0.7127
+E6(e) diff=2.0830 gauss=0.4975

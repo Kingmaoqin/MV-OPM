@@ -1,0 +1,21 @@
+  E10 n=2000 seed=0: ATE_hat=2.256
+  E10 n=2000 seed=1: ATE_hat=2.161
+  E10 n=2000 seed=2: ATE_hat=2.167
+  E10 n=2000 seed=3: ATE_hat=2.175
+  E10 n=2000 seed=4: ATE_hat=2.118
+  E10 n=2000 seed=5: ATE_hat=2.160
+E10 n=2000: subgroup_cov=0.700 pointwise_cov=0.600
+  E10 n=4000 seed=0: ATE_hat=1.986
+  E10 n=4000 seed=1: ATE_hat=1.995
+  E10 n=4000 seed=2: ATE_hat=2.119
+  E10 n=4000 seed=3: ATE_hat=1.912
+  E10 n=4000 seed=4: ATE_hat=2.058
+  E10 n=4000 seed=5: ATE_hat=2.056
+E10 n=4000: subgroup_cov=0.900 pointwise_cov=0.900
+  E10 n=8000 seed=0: ATE_hat=2.044
+  E10 n=8000 seed=1: ATE_hat=1.969
+  E10 n=8000 seed=2: ATE_hat=2.041
+  E10 n=8000 seed=3: ATE_hat=1.953
+  E10 n=8000 seed=4: ATE_hat=2.050
+  E10 n=8000 seed=5: ATE_hat=1.965
+E10 n=8000: subgroup_cov=0.967 pointwise_cov=0.967

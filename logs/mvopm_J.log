@@ -1,0 +1,12 @@
+launching 30 rows, 8 workers x 4 threads
+  10/30 done (10 failed) 774s ~77.4s/row
+  20/30 done (20 failed) 1169s ~58.5s/row
+  23/30 done (23 failed) 1177s ~51.2s/row
+  24/30 done (24 failed) 1186s ~49.4s/row
+  25/30 done (25 failed) 1460s ~58.4s/row
+  26/30 done (26 failed) 1463s ~56.3s/row
+  27/30 done (27 failed) 1471s ~54.5s/row
+  28/30 done (28 failed) 1474s ~52.7s/row
+  29/30 done (29 failed) 1476s ~50.9s/row
+  30/30 done (30 failed) 1476s ~49.2s/row
+FINISHED 30 rows, 30 failed, 1476s

@@ -1,0 +1,86 @@
+[explore] S1 seed500 7s
+[explore] S1 seed501 6s
+[explore] S1 seed502 6s
+[explore] S1 seed503 6s
+[explore] S1 seed504 6s
+[explore] S1 seed505 6s
+[explore] S1 seed506 7s
+[explore] S1 seed507 6s
+[explore] S1 seed508 6s
+[explore] S1 seed509 6s
+[explore] S1 seed510 6s
+[explore] S1 seed511 6s
+[explore] S1 seed512 6s
+[explore] S1 seed513 6s
+[explore] S1 seed514 6s
+[explore] S2 seed500 6s
+[explore] S2 seed501 6s
+[explore] S2 seed502 7s
+[explore] S2 seed503 6s
+[explore] S2 seed504 6s
+[explore] S2 seed505 6s
+[explore] S2 seed506 7s
+[explore] S2 seed507 6s
+[explore] S2 seed508 7s
+[explore] S2 seed509 6s
+[explore] S2 seed510 7s
+[explore] S2 seed511 6s
+[explore] S2 seed512 6s
+[explore] S2 seed513 6s
+[explore] S2 seed514 6s
+[explore] nonlinear seed500 5s
+[explore] nonlinear seed501 5s
+[explore] nonlinear seed502 5s
+[explore] nonlinear seed503 5s
+[explore] nonlinear seed504 4s
+[explore] nonlinear seed505 5s
+[explore] nonlinear seed506 5s
+[explore] nonlinear seed507 5s
+[explore] nonlinear seed508 5s
+[explore] nonlinear seed509 4s
+[explore] nonlinear seed510 5s
+[explore] nonlinear seed511 5s
+[explore] nonlinear seed512 5s
+[explore] nonlinear seed513 4s
+[explore] nonlinear seed514 5s
+[explore] hamd seed500 35s
+[explore] hamd seed501 35s
+[explore] hamd seed502 36s
+[explore] hamd seed503 37s
+[explore] hamd seed504 37s
+[explore] hamd seed505 36s
+[explore] hamd seed506 37s
+[explore] hamd seed507 37s
+[explore] hamd seed508 35s
+[explore] hamd seed509 37s
+[explore] hamd seed510 36s
+[explore] hamd seed511 37s
+[explore] hamd seed512 35s
+[explore] hamd seed513 38s
+[explore] hamd seed514 37s
+wrote /home/xqin5/进化的opm/results/mvopm/EXPLORATORY_BIASVAR.md
+ scenario         score  median_ratio  mean_spearman  cat_rate  top1_rate
+       S1       product         1.183          0.093     0.400      0.267
+       S1  biasvar_mult         1.060          0.699     0.333      0.400
+       S1   biasvar_add         1.060          0.699     0.333      0.400
+       S1 variance_only         1.279          0.509     0.400      0.267
+       S1  fixed_sieve1         1.067          0.410     0.267      0.333
+       S1  fixed_kernel         3.339         -0.201     0.933      0.000
+       S2       product         1.012          0.269     0.267      0.467
+       S2  biasvar_mult         1.023          0.733     0.133      0.400
+       S2   biasvar_add         1.023          0.733     0.133      0.400
+       S2 variance_only         1.095          0.390     0.200      0.333
+       S2  fixed_sieve1         1.000          0.498     0.133      0.533
+       S2  fixed_kernel         6.202         -0.532     1.000      0.000
+nonlinear       product         4.069          0.192     0.600      0.333
+nonlinear  biasvar_mult         1.882          0.745     0.733      0.133
+nonlinear   biasvar_add         1.882          0.745     0.733      0.133
+nonlinear variance_only         1.882          0.493     0.733      0.133
+nonlinear  fixed_sieve1         1.000          0.602     0.067      0.800
+nonlinear  fixed_kernel         7.324         -0.218     1.000      0.000
+     hamd       product         1.346          0.440     0.267      0.400
+     hamd  biasvar_mult         1.011          0.730     0.267      0.467
+     hamd   biasvar_add         1.011          0.730     0.267      0.467
+     hamd variance_only         3.931          0.112     1.000      0.000
+     hamd  fixed_sieve1         1.274          0.375     0.200      0.400
+     hamd  fixed_kernel         3.205         -0.288     1.000      0.000

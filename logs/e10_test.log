@@ -1,0 +1,11 @@
+seed0 done
+seed1 done
+seed2 done
+seed3 done
+seed4 done
+seed5 done
+seed6 done
+seed7 done
+LL bw=0.6 per x0: {-1: np.float64(0.38), -0.5: np.float64(0.88), 0: np.float64(0.88), 0.5: np.float64(0.75), 1: np.float64(1.0)}
+LL overall: 0.775
+binned group-ATE overall: 0.775

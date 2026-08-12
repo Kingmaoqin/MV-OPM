@@ -1,6 +1,6 @@
-results/
-logs/
 __pycache__/
 *.pyc
+*.egg-info/
 opm.egg-info/
 .conda_env/
+.ipynb_checkpoints/
