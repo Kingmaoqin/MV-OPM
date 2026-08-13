@@ -1,0 +1,2 @@
+n_repeated_splits,ate_mean,ate_median,ate_sd,ate_min,ate_max,negative_effect_rate,ci_excludes_zero_rate,ess_mean,ess_min,max_q_mean,max_q_max,q_balance_mean,survivor_count_mean
+1,-1.8770675770451029,-1.8770675770451029,,-1.8770675770451029,-1.8770675770451029,1.0,1.0,2864.344875868293,2864.344875868293,2.3719162940979004,2.3719162940979004,0.1816105174207645,2.0

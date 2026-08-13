@@ -1,0 +1,17 @@
+transition,family,stratum,scientific_seed,from,to,changed
+sample_size,L,high,220000,kernel_kernel,kernel_sieve1,True
+sample_size,L,low,220000,kernel_sieve1,kernel_sieve1,False
+sample_size,M,high,220000,kernel_kernel,kernel_sieve1,True
+sample_size,M,low,220000,sieve1_kernel,kernel_sieve1,True
+sample_size,N,high,220000,kernel_sieve1,sieve1_kernel,True
+sample_size,N,low,220000,sieve1_sieve1,sieve1_kernel,True
+sample_size,Q,high,220000,sieve1_kernel,sieve2_sieve2,True
+sample_size,Q,low,220000,sieve1_kernel,sieve2_sieve2,True
+proxy_noise,L,1500,220000,kernel_sieve1,kernel_kernel,True
+proxy_noise,L,6000,220000,kernel_sieve1,kernel_sieve1,False
+proxy_noise,M,1500,220000,sieve1_kernel,kernel_kernel,True
+proxy_noise,M,6000,220000,kernel_sieve1,kernel_sieve1,False
+proxy_noise,N,1500,220000,sieve1_sieve1,kernel_sieve1,True
+proxy_noise,N,6000,220000,sieve1_kernel,sieve1_kernel,False
+proxy_noise,Q,1500,220000,sieve1_kernel,sieve1_kernel,False
+proxy_noise,Q,6000,220000,sieve2_sieve2,sieve2_sieve2,False

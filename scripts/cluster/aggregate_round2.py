@@ -19,6 +19,21 @@ def _cell(value):
     return value
 
 
+def _numeric_list(value):
+    """Return finite numeric list elements without changing the retained raw cell."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out = []
+    for item in value:
+        try:
+            item = float(item)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(item):
+            out.append(item)
+    return out
+
+
 def aggregate(manifest: str) -> dict:
     manifest_rows = [json.loads(line) for line in open(manifest)]
     tasks, candidates, missing, failures = [], [], [], []
@@ -41,7 +56,11 @@ def aggregate(manifest: str) -> dict:
             "bootstrap_seed": expected["bootstrap_seed"], "split_seed": expected["split_seed"],
             "bank_seed": expected["bank_seed"], "git_commit": prov.get("git_commit"),
             "hostname": prov.get("hostname"), "runtime_s": prov.get("runtime_s"),
-            "status": prov.get("status"),
+            "status": prov.get("status"), "exit_code": prov.get("exit_code"),
+            "array_task_id": prov.get("array_task_id"),
+            "start_time_utc": prov.get("start_time_utc"),
+            "end_time_utc": prov.get("end_time_utc"),
+            "warnings": _cell(prov.get("warnings", [])),
         }
         task = dict(base)
         for key, value in result.items():
@@ -52,9 +71,44 @@ def aggregate(manifest: str) -> dict:
             else:
                 task[key] = _cell(value)
         tasks.append(task)
+        nested_folds = (result.get("_nested") or {}).get("folds") or []
         for name, metrics in (result.get("_candidates") or {}).items():
             row = {**base, "candidate": name}
             row.update({k: _cell(v) for k, v in metrics.items()})
+            # Keep the exact arrays above, and add analysis-ready scalars with explicit names.
+            for key in ("p_h", "p_q", "p_DR", "ate_ci_width_by_contrast",
+                        "ate_se_by_contrast", "ess_by_arm", "po_var_by_contrast"):
+                values = _numeric_list(metrics.get(key))
+                if values:
+                    row[f"min_{key}"] = min(values)
+                    row[f"mean_{key}"] = float(np.mean(values))
+                    row[f"max_{key}"] = max(values)
+            if nested_folds:
+                row["nested_screen_survival_fraction"] = float(np.mean([
+                    name in (fold.get("survivors") or []) for fold in nested_folds
+                ]))
+                selector_names = sorted({
+                    selector
+                    for fold in nested_folds
+                    for selector in (fold.get("selected_by_selector") or {})
+                })
+                for selector in selector_names:
+                    row[f"nested_selected_fraction[{selector}]"] = float(np.mean([
+                        (fold.get("selected_by_selector") or {}).get(selector) == name
+                        for fold in nested_folds
+                    ]))
+            elif result.get("study") == "J2":
+                # J2 stores a full-sample OOF deployment decision and, separately, the four
+                # outer-fold choices.  Keep both with names that cannot conflate them.
+                row["deployment_screen_survival"] = float(
+                    name in (result.get("survivors") or [])
+                )
+                row["deployment_selected[MSES]"] = float(result.get("selected") == name)
+                nested_selected = result.get("nested_selected_by_fold") or []
+                if nested_selected:
+                    row["nested_selected_fraction[MSES]"] = float(np.mean([
+                        selected == name for selected in nested_selected
+                    ]))
             candidates.append(row)
 
     manifest_name = os.path.basename(manifest)

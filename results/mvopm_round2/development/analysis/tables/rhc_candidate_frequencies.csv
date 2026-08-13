@@ -1,0 +1,5 @@
+candidate,n_splits,full_sample_deployment_screen_survival_frequency,full_sample_deployment_MSES_selection_frequency,outer_fold_MSES_selection_frequency
+kernel_kernel,1,0.0,0.0,0.0
+kernel_sieve1,1,0.0,0.0,0.0
+sieve1_kernel,1,1.0,1.0,1.0
+sieve1_sieve1,1,1.0,0.0,0.0

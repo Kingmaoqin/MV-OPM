@@ -1,0 +1,16 @@
+scope,candidate,count,frequency
+pooled,kernel_sieve1,8,0.4
+pooled,sieve1_kernel,6,0.3
+pooled,kernel_kernel,3,0.15
+pooled,sieve2_sieve2,2,0.1
+pooled,sieve1_sieve1,1,0.05
+family_L,kernel_sieve1,3,0.6
+family_L,kernel_kernel,2,0.4
+family_Q,sieve1_kernel,3,0.6
+family_Q,sieve2_sieve2,2,0.4
+family_N,kernel_sieve1,2,0.4
+family_N,sieve1_kernel,2,0.4
+family_N,sieve1_sieve1,1,0.2
+family_M,kernel_sieve1,3,0.6
+family_M,sieve1_kernel,1,0.2
+family_M,kernel_kernel,1,0.2

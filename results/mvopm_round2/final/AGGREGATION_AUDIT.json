@@ -1,0 +1,22 @@
+{
+  "manifest_rows": 6820,
+  "ok_rows": 6820,
+  "candidate_rows": 10020,
+  "missing_rows": 0,
+  "failed_rows": 0,
+  "per_study_ok": {
+    "A2": 5000,
+    "B2": 50,
+    "C2": 50,
+    "D2": 50,
+    "E2": 50,
+    "R": 600,
+    "F2": 120,
+    "G2": 480,
+    "H2": 240,
+    "I2": 150,
+    "J2": 30
+  },
+  "missing": [],
+  "failures": []
+}

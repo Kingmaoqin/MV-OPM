@@ -1,0 +1,4 @@
+config_id,library_truth,n_rep,abstention_rate,false_abstention_rate,true_rejection_rate,survivor_count_mean
+N_kernel_overregularized,inadequate_severe_regularization,50,0.7,,0.7,0.72
+N_sieve1_only,inadequate_constrained_library,50,0.0,,0.0,1.0
+easy_L_full,adequate_easy,50,0.0,0.0,,5.73
