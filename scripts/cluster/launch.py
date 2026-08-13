@@ -20,12 +20,19 @@ PY = os.environ.get("PY", "/home/xqin5/.conda/envs/MDPC/bin/python")
 WORKER = os.path.join(ROOT, "scripts", "cluster", "worker.py")
 
 
-def _done(row):
+def _terminal(row, rerun_infrastructure=False):
     p = row["out_path"]
     if not os.path.exists(p):
         return False
     try:
-        return json.load(open(p)).get("status") == "ok"
+        result = json.load(open(p))
+        if result.get("status") == "ok":
+            return True
+        if rerun_infrastructure and result.get("failure_kind") == "infrastructure":
+            return False
+        # Algorithmic failures are scientific records and are terminal unless a human explicitly
+        # invokes the worker for that exact row; the worker archives every previous attempt.
+        return True
     except Exception:
         return False
 
@@ -37,6 +44,8 @@ def main():
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--studies", default=None, help="comma list to filter, e.g. A,B")
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--rerun-infrastructure", action="store_true",
+                    help="with --resume, rerun only rows classified as infrastructure failures")
     ap.add_argument("--max", type=int, default=None, help="cap number of rows (debug)")
     args = ap.parse_args()
 
@@ -46,7 +55,7 @@ def main():
         keep = set(args.studies.split(","))
         idxs = [i for i in idxs if rows[i]["study"] in keep]
     if args.resume:
-        idxs = [i for i in idxs if not _done(rows[i])]
+        idxs = [i for i in idxs if not _terminal(rows[i], args.rerun_infrastructure)]
     if args.max:
         idxs = idxs[:args.max]
     print(f"launching {len(idxs)} rows, {args.workers} workers x {args.threads} threads", flush=True)

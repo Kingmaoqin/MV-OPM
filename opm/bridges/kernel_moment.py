@@ -116,9 +116,13 @@ class KernelBridges:
         self.bw_h = median_bandwidth(inst_h, seed=cfg.seed)
         self.bw_q = median_bandwidth(inst_q, seed=cfg.seed + 1)
 
-        # nets
-        self.net_h = TrunkNet(feat_h.shape[1], self.K, cfg.arm_emb, cfg.hidden, cfg.depth).to(self.device)
-        self.net_q = TrunkNet(feat_q.shape[1], self.K, cfg.arm_emb, cfg.hidden, cfg.depth).to(self.device)
+        # Isolate initialization from the caller's global torch RNG stream. Training has no
+        # stochastic torch layers; minibatch order comes from the local NumPy generator above.
+        fork_devices = [] if self.device.type != "cuda" else [self.device.index or torch.cuda.current_device()]
+        with torch.random.fork_rng(devices=fork_devices):
+            torch.manual_seed(cfg.seed)
+            self.net_h = TrunkNet(feat_h.shape[1], self.K, cfg.arm_emb, cfg.hidden, cfg.depth).to(self.device)
+            self.net_q = TrunkNet(feat_q.shape[1], self.K, cfg.arm_emb, cfg.hidden, cfg.depth).to(self.device)
         ema_h, ema_q = EMA(self.net_h, cfg.ema_decay), EMA(self.net_q, cfg.ema_decay)
         opt = torch.optim.AdamW(list(self.net_h.parameters()) + list(self.net_q.parameters()),
                                 lr=cfg.lr, weight_decay=cfg.weight_decay)

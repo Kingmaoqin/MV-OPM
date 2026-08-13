@@ -60,7 +60,10 @@ class MLPRegressor:
         dev = self.device
         Xt = torch.tensor(Xs, device=dev)
         Yt = torch.tensor(Y, device=dev)
-        self.model = _MLP(Xs.shape[1], Y.shape[1], cfg.hidden, cfg.depth).to(dev)
+        fork_devices = [] if dev.type != "cuda" else [dev.index or torch.cuda.current_device()]
+        with torch.random.fork_rng(devices=fork_devices):
+            torch.manual_seed(cfg.seed)
+            self.model = _MLP(Xs.shape[1], Y.shape[1], cfg.hidden, cfg.depth).to(dev)
         opt = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         lossf = nn.MSELoss()
 

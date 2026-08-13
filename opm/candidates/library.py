@@ -29,6 +29,7 @@ CANDIDATE_SPECS: Dict[str, Tuple[str, str]] = {
     "sieve1_kernel": ("sieve1", "kernel"),
 }
 CANDIDATE_NAMES: List[str] = sorted(CANDIDATE_SPECS)          # FIXED order (sorted)
+SOLVER_SEED_OFFSETS = {"kernel": 1, "sieve1": 18, "sieve2": 35, "sieve3": 52}
 
 
 def _make_solver(name: str, K: int, seed: int, device: str, bridge_kwargs: dict):
@@ -74,12 +75,18 @@ class CandidateSet:
     def fit(self, view) -> "CandidateSet":
         needed = sorted({s for nm in self.names for s in CANDIDATE_SPECS[nm]})
         self._solvers = {}
-        for si, sname in enumerate(needed):                   # deterministic per-solver seed
-            ssd = self.seed + 17 * si + 1
-            torch.manual_seed(ssd)                            # make net init reproducible &
-            np.random.seed(ssd)                               # candidate-order-invariant (torch
-            self._solvers[sname] = _make_solver(sname, self.K, ssd,   # global RNG isolation)
-                                                self.device, self.bridge_kwargs).fit(view)
+        for sname in needed:                                  # stable even when library is restricted
+            ssd = self.seed + SOLVER_SEED_OFFSETS[sname]
+            # Network construction uses torch's initialization routines. fork_rng makes the fit
+            # reproducible without changing or depending on the caller's global RNG stream.
+            fork_devices = [] if not str(self.device).startswith("cuda") else [
+                torch.device(self.device).index or torch.cuda.current_device()
+            ]
+            with torch.random.fork_rng(devices=fork_devices):
+                torch.manual_seed(ssd)
+                self._solvers[sname] = _make_solver(
+                    sname, self.K, ssd, self.device, self.bridge_kwargs
+                ).fit(view)
         self.candidates = {nm: _FittedCandidate(nm, self._solvers[CANDIDATE_SPECS[nm][0]],
                                                 self._solvers[CANDIDATE_SPECS[nm][1]])
                            for nm in self.names}
