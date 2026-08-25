@@ -112,6 +112,47 @@ def fit_cate_and_ate(X, phi, K, device="cpu", seed=0, head_kwargs=None):
     return tau_head, g0_head, ate
 
 
+def crossfit_cate_predictions(
+    X,
+    phi,
+    K,
+    *,
+    n_folds=4,
+    device="cpu",
+    seed=0,
+    head_kwargs=None,
+):
+    """Return head-level cross-fitted CATE predictions.
+
+    The evaluation row is excluded from the Stage-2 head fit. Stage-1 OOF pseudo-outcomes are
+    reused, so this helper alone does not establish end-to-end nested CATE-risk evaluation.
+    """
+    from .crossfit import make_folds
+
+    X = np.asarray(X)
+    phi = np.asarray(phi)
+    if phi.shape != (len(X), K):
+        raise ValueError("phi must have shape (len(X), K)")
+    if n_folds < 2:
+        raise ValueError("n_folds must be at least 2 for cross-fitted CATE evaluation")
+    if n_folds > len(X):
+        raise ValueError("n_folds cannot exceed the number of observations")
+    D = phi[:, 1:] - phi[:, [0]]
+    predictions = np.full((len(X), K - 1), np.nan, dtype=float)
+    coverage = np.zeros(len(X), dtype=int)
+    all_idx = np.arange(len(X))
+    for fold, valid in enumerate(make_folds(len(X), n_folds, seed)):
+        train = np.setdiff1d(all_idx, valid, assume_unique=False)
+        model = MLPRegressor(HeadConfig(
+            device=device, seed=seed + 1000 * fold + 1, **(head_kwargs or {}),
+        )).fit(X[train], D[train])
+        predictions[valid] = model.predict(X[valid]).reshape(len(valid), K - 1)
+        coverage[valid] += 1
+    if not np.all(coverage == 1) or not np.all(np.isfinite(predictions)):
+        raise RuntimeError("Stage-2 cross-fitted prediction coverage invariant failed")
+    return predictions
+
+
 def ate_with_ci(psi: np.ndarray) -> dict:
     """ATE point + 95% CI from the per-sample contrast psi_i = phi_k - phi_0."""
     n = len(psi)

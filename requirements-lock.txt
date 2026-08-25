@@ -1,0 +1,14 @@
+# Direct scientific dependencies for the remediation environment (Python 3.12, CUDA 12.4).
+# Every worker additionally records the actual interpreter, platform, and installed versions.
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+torch==2.6.0+cu124
+numpy==2.4.2
+pandas==2.3.3
+scikit-learn==1.6.1
+econml==0.16.0
+scipy==1.17.0
+matplotlib==3.10.8
+PyYAML==6.0.3
+pyarrow==23.0.1
+pytest==9.0.2

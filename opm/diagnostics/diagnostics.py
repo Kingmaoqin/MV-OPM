@@ -23,8 +23,16 @@ def bridge_residual_score(R: np.ndarray, inst: np.ndarray, bw: float,
     return float(moments.max() / (R.std() + 1e-8))
 
 
-def q_sanity(q_pred: np.ndarray, T: np.ndarray, K: int) -> Dict[int, Dict[str, float]]:
-    """En[1{T=k} q_k] (target 1), max weight, ESS_k."""
+def q_sanity(
+    q_pred: np.ndarray,
+    T: np.ndarray,
+    K: int,
+    *,
+    q_lower: float = 0.0,
+    q_upper: float = 50.0,
+    boundary_tol: float = 1e-8,
+) -> Dict[int, Dict[str, float]]:
+    """Balance, extrema, ESS, and hard-boundary fractions for each q arm."""
     n = len(T)
     onehot = np.zeros((n, K)); onehot[np.arange(n), T] = 1.0
     w = onehot * q_pred
@@ -32,8 +40,15 @@ def q_sanity(q_pred: np.ndarray, T: np.ndarray, K: int) -> Dict[int, Dict[str, f
     for k in range(K):
         wk = w[:, k][T == k]
         ess = (wk.sum() ** 2) / (np.sum(wk ** 2) + 1e-12) if len(wk) else 0.0
-        out[k] = {"En_1Tk_qk": float(w[:, k].mean()), "max_q": float(q_pred[:, k].max()),
-                  "ess": float(ess)}
+        qk = q_pred[:, k]
+        out[k] = {
+            "En_1Tk_qk": float(w[:, k].mean()),
+            "min_q": float(qk.min()),
+            "max_q": float(qk.max()),
+            "fraction_at_lower_bound": float(np.mean(qk <= q_lower + boundary_tol)),
+            "fraction_at_upper_bound": float(np.mean(qk >= q_upper - boundary_tol)),
+            "ess": float(ess),
+        }
     return out
 
 

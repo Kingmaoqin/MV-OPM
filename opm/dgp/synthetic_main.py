@@ -58,7 +58,7 @@ def _assemble_s1_like(X_est, Xc, U, rng, P, c_U):
         X=X_est, T=T, Y=Y, K=4, W=W, V=V,
         tau_true=tau, mu_true=mu_true, ate_true=ate_true,
         cf_mean=cf_mean, cf_var=CF_VAR,
-        meta={"g0_var": float(g0.var())},
+        meta={"g0_var": float(g0.var()), "true_propensity": probs},
     )
 
 
@@ -88,6 +88,12 @@ def generate_s2(n: int = 4000, seed: int = 0, c_U: float = 1.0, p: int = 10) -> 
     pb = 1.0 / (1.0 + np.exp(-logit_b))
     B = (rng.uniform(size=(n, 2)) < pb).astype(np.int64)
     T = (B[:, 0] + 2 * B[:, 1]).astype(np.int64)
+    probs = np.column_stack([
+        (1 - pb[:, 0]) * (1 - pb[:, 1]),
+        pb[:, 0] * (1 - pb[:, 1]),
+        (1 - pb[:, 0]) * pb[:, 1],
+        pb[:, 0] * pb[:, 1],
+    ])
 
     def tau_of(b1, b2):
         return (b1 * (1.0 + 0.5 * X[:, 0])
@@ -106,7 +112,8 @@ def generate_s2(n: int = 4000, seed: int = 0, c_U: float = 1.0, p: int = 10) -> 
         X=X, T=T, Y=Y, K=4, W=W, V=V,
         tau_true=tau_full[:, 1:], mu_true=mu_true, ate_true=tau_full[:, 1:].mean(axis=0),
         cf_mean=mu_true.copy(), cf_var=CF_VAR,
-        meta={"dgp": "S2", "n": n, "seed": seed, "c_U": c_U},
+        meta={"dgp": "S2", "n": n, "seed": seed, "c_U": c_U,
+              "true_propensity": probs},
     )
 
 

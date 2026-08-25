@@ -17,7 +17,11 @@ Model (K=2)
         eps ~ N(0, 0.4^2)
     T = 1{ 0.8 U1 + 0.7 U2 + 0.5 X_1 + eps_t > 0 }
     Y = g0(X) + tau(X) T + phi(U) + eps_y
-      g0(x) = beta_x' x, beta_x=(1,-1,0.5,0,0);  tau(x) = 2 + 0.8 x_1  (ATE=2)
+      g0(x) = beta_x' x, beta_x=(1,-1,0.5,0,0);  tau(x) = 2 + 0.8 x_1
+
+The population ATE is 2. The primary simulation target follows the repository-wide
+empirical-X convention and stores mean_i tau(X_i) in ``ate_true``; the population value is
+retained separately in metadata.
       phi(U) = U1 U2 + 0.6 (U1^2 - 1) + 0.8 sin(U1 + U2)      (E[phi]=0)
 """
 from __future__ import annotations
@@ -56,6 +60,12 @@ def generate(n: int, seed: int) -> CausalDataset:
     mu_true = np.stack([g0, g0 + tau], axis=1)
     return CausalDataset(
         X=X, T=T, Y=Y, K=2, W=W, V=V,
-        tau_true=tau_true, mu_true=mu_true, ate_true=np.array([ATE]),
-        meta={"dgp": "nonlinear_bridge", "n": n, "seed": seed},
+        tau_true=tau_true, mu_true=mu_true, ate_true=np.mean(tau_true, axis=0),
+        meta={
+            "dgp": "nonlinear_bridge",
+            "n": n,
+            "seed": seed,
+            "ate_population": np.array([ATE]),
+            "ate_target": "empirical_X_mean_tau",
+        },
     )

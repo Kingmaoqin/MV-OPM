@@ -1,12 +1,15 @@
-"""Formal studentized identifying-moment tests for MV-OPM Round 2.
+"""Studentized empirical identifying-moment compatibility diagnostics.
 
 The descriptive discrepancies in :mod:`opm.validation.moments` are intentionally retained.
-This module adds a candidate-comparable hypothesis test using a shared RFF bank and a centered
-Gaussian multiplier bootstrap. It contains no oracle or DGP imports.
+The centered Gaussian multiplier calculation is calibrated for a fixed prediction function.
+When predictions are produced by overlapping cross-fit nuisance estimators, model-class size is
+not established by this module; callers must not describe these p-values as a proof of candidate
+class adequacy. The module contains no oracle or DGP imports.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Dict, Iterable, Tuple
 
 import numpy as np
@@ -15,6 +18,7 @@ from ..utils import standardize_apply
 from .moments import MomentBank
 
 SE_EPS = 1e-12
+CALIBRATION_SCOPE = "fixed_prediction_empirical_compatibility_not_fitted_model_class_adequacy"
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,7 @@ class MaxTestResult:
             "warning": self.warning,
             "bootstrap_seed": self.bootstrap_seed,
             "n_boot": self.n_boot,
+            "calibration_scope": CALIBRATION_SCOPE,
         }
 
 
@@ -136,7 +141,17 @@ def test_candidate_hq(
         "p_h": p_h,
         "p_q": p_q,
         "p_DR": np.maximum(p_h, p_q),
+        "calibration_scope": CALIBRATION_SCOPE,
     }
+
+
+def candidate_bootstrap_seed(base_seed: int, candidate_name: str) -> int:
+    """Return a deterministic stream that is invariant to candidate-library composition."""
+    if not candidate_name:
+        raise ValueError("candidate_name must be nonempty")
+    digest = hashlib.sha256(f"mvopm-bootstrap:{candidate_name}".encode("utf-8")).digest()
+    offset = int.from_bytes(digest[:8], byteorder="little", signed=False)
+    return (int(base_seed) + offset) % (2**63 - 1)
 
 
 def test_many_candidates(
@@ -147,11 +162,16 @@ def test_many_candidates(
     n_boot: int = 999,
     bootstrap_seed: int,
 ) -> Dict[str, dict]:
-    """Apply one shared bank to all candidates with stable per-candidate bootstrap streams."""
+    """Apply one shared bank using library-composition-invariant candidate streams."""
     out = {}
-    for i, name in enumerate(sorted(predictions)):
+    for name in sorted(predictions):
         h, q = predictions[name]
         out[name] = test_candidate_hq(
-            bank, h, q, view, n_boot=n_boot, bootstrap_seed=int(bootstrap_seed) + 10000 * i
+            bank,
+            h,
+            q,
+            view,
+            n_boot=n_boot,
+            bootstrap_seed=candidate_bootstrap_seed(bootstrap_seed, name),
         )
     return out

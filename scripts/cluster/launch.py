@@ -16,24 +16,53 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
+
+from opm.provenance import (
+    registered_manifest_commit,
+    sha256_file,
+    validate_execution_manifest,
+    validate_manifest_output_namespace,
+    validate_result_checksum,
+    validate_result_provenance,
+)
+
 PY = os.environ.get("PY", "/home/xqin5/.conda/envs/MDPC/bin/python")
 WORKER = os.path.join(ROOT, "scripts", "cluster", "worker.py")
+FROZEN_FINAL_ROOT = os.path.join(ROOT, "results", "mvopm_round2", "final")
 
 
-def _terminal(row, rerun_infrastructure=False):
+def _terminal(
+    row,
+    rerun_infrastructure=False,
+    *,
+    array_task_id: int,
+    manifest_sha256: str,
+):
     p = row["out_path"]
     if not os.path.exists(p):
         return False
     try:
-        result = json.load(open(p))
+        with open(p, encoding="utf-8") as handle:
+            result = json.load(handle)
+        validate_result_checksum(p, required=bool(row.get("source_commit")))
+        validate_result_provenance(
+            result,
+            row,
+            array_task_id=array_task_id,
+            manifest_sha256=manifest_sha256,
+        )
         if result.get("status") == "ok":
             return True
         if rerun_infrastructure and result.get("failure_kind") == "infrastructure":
             return False
+        if result.get("failure_kind") == "provenance":
+            return False
         # Algorithmic failures are scientific records and are terminal unless a human explicitly
         # invokes the worker for that exact row; the worker archives every previous attempt.
         return True
-    except Exception:
+    except Exception as exc:
+        print(f"resume rejected {p}: {type(exc).__name__}: {exc}", file=sys.stderr)
         return False
 
 
@@ -49,13 +78,31 @@ def main():
     ap.add_argument("--max", type=int, default=None, help="cap number of rows (debug)")
     args = ap.parse_args()
 
-    rows = [json.loads(l) for l in open(args.manifest)]
+    with open(args.manifest, encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
+    manifest_hash = sha256_file(args.manifest)
+    frozen_commit = registered_manifest_commit(manifest_hash)
+    if frozen_commit:
+        raise RuntimeError(
+            f"refusing to launch registered frozen manifest {manifest_hash} at historical "
+            f"checkpoint {frozen_commit}; use a new program and namespace"
+        )
+    validate_execution_manifest(rows)
+    validate_manifest_output_namespace(rows, protected_roots=[FROZEN_FINAL_ROOT])
     idxs = list(range(len(rows)))
     if args.studies:
         keep = set(args.studies.split(","))
         idxs = [i for i in idxs if rows[i]["study"] in keep]
     if args.resume:
-        idxs = [i for i in idxs if not _terminal(rows[i], args.rerun_infrastructure)]
+        idxs = [
+            i for i in idxs
+            if not _terminal(
+                rows[i],
+                args.rerun_infrastructure,
+                array_task_id=i,
+                manifest_sha256=manifest_hash,
+            )
+        ]
     if args.max:
         idxs = idxs[:args.max]
     print(f"launching {len(idxs)} rows, {args.workers} workers x {args.threads} threads", flush=True)

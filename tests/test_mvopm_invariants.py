@@ -16,7 +16,11 @@ from opm.estimator.nested_crossfit import NestedConfig, nested_mvopm
 from opm.estimator.nested_mses import NestedMSESConfig, nested_mses
 from opm.validation.moments import build_bank, evaluate_candidate
 from opm.validation.selector import compute_scores
-from opm.validation.moment_tests import studentized_rff_max_test
+from opm.validation.moment_tests import (
+    CALIBRATION_SCOPE,
+    studentized_rff_max_test,
+    test_many_candidates as run_many_candidate_tests,
+)
 from opm.validation.oof import collect_candidate_oof
 from opm.validation.selector_v2 import ABSTAIN, pseudo_outcome_uncertainty, screen_candidate, select_mses
 from opm.experiments.mvopm_round2.studies import E_TANH2, aligned_mechanism_row
@@ -44,8 +48,11 @@ def test_selector_cannot_access_oracle_truth():
 def test_selection_packages_do_not_import_oracle():
     import opm.validation.moments as m
     import opm.validation.selector as s
+    import opm.validation.selector_v2 as s2
+    import opm.validation.oof as oof
     import opm.candidates.library as c
-    for mod in (m, s, c):
+    import opm.estimator.nested_mses as nested
+    for mod in (m, s, s2, oof, c, nested):
         assert "oracle" not in getattr(mod, "__dict__", {}), f"{mod.__name__} imported oracle"
         src = open(mod.__file__).read()
         assert "eval.oracle" not in src and "import oracle" not in src
@@ -112,7 +119,9 @@ def test_candidate_order_invariance():
     cs2 = CandidateSet(2, seed=0, bridge_kwargs=BK, candidate_names=["sieve2_sieve2", "kernel_kernel", "sieve1_sieve1"]).fit(v)
     for nm in ["kernel_kernel", "sieve1_sieve1", "sieve2_sieve2"]:
         h1 = cs1.get(nm).predict_h(v.W, v.X); h2 = cs2.get(nm).predict_h(v.W, v.X)
+        q1 = cs1.get(nm).predict_q(v.V, v.X); q2 = cs2.get(nm).predict_q(v.V, v.X)
         assert np.allclose(h1, h2), f"candidate {nm} depends on order"
+        assert np.allclose(q1, q2), f"candidate q for {nm} depends on order"
 
 
 def test_arm_order_and_alignment():
@@ -149,8 +158,32 @@ def test_adversarial_outer_test_leak_is_detected():
 def test_adversarial_oracle_exposure_is_blocked():
     ds = fpe.generate(200, 0)
     ds.meta["tau_true"] = ds.tau_true          # try to smuggle truth through meta
+    ds.meta["renamed_secret"] = {"oracle": ds.tau_true}
     v = observed(ds)
     assert "tau_true" not in v.meta            # stripped by the view
+    assert "renamed_secret" not in v.meta       # metadata is allowlisted, not blacklisted
+
+
+def test_observed_view_is_immutable():
+    v = _view(129, n=100)
+    with pytest.raises(ValueError):
+        v.X[0, 0] = 123.0
+    with pytest.raises(AttributeError):
+        v.X = np.zeros_like(v.X)
+    with pytest.raises(TypeError):
+        v.meta["new"] = "value"
+    with pytest.raises(ValueError):
+        v.X.setflags(write=True)
+    sub = v.subset(np.arange(10))
+    assert not sub.X.flags.writeable
+
+
+def test_observed_view_exposes_no_allowlisted_metadata_smuggling_channel():
+    ds = fpe.generate(100, 132)
+    ds.meta["dgp"] = ds.tau_true
+    ds.meta["n"] = {"secret": ds.ate_true}
+    v = observed(ds)
+    assert dict(v.meta) == {}
 
 
 # ---------- Round-2 aligned mechanism ----------
@@ -198,6 +231,32 @@ def test_bootstrap_p_values_are_deterministic():
     assert a.statistic == b.statistic
     assert a.p_value == b.p_value
     assert 0.01 <= a.p_value <= 1.0
+
+
+def test_candidate_bootstrap_is_invariant_to_library_expansion():
+    v = _view(127, n=220)
+    inst_h = np.concatenate([v.V, v.X], axis=1)
+    inst_q = np.concatenate([v.W, v.X], axis=1)
+    bank = build_bank(inst_h, inst_q, n_rff=12, seed=7001)
+    ds = fpe.generate(220, 127, c_U=1.0)
+    h = np.asarray(ds.meta["h_true_val"], dtype=float)
+    q = np.asarray(ds.meta["q_true_val"], dtype=float)
+    alone = run_many_candidate_tests(
+        bank, {"sieve1_sieve1": (h, q)}, v, n_boot=49, bootstrap_seed=8001,
+    )["sieve1_sieve1"]
+    expanded = run_many_candidate_tests(
+        bank,
+        {"kernel_kernel": (h.copy(), q.copy()), "sieve1_sieve1": (h, q)},
+        v,
+        n_boot=49,
+        bootstrap_seed=8001,
+    )["sieve1_sieve1"]
+    assert np.array_equal(alone["p_h"], expanded["p_h"])
+    assert np.array_equal(alone["p_q"], expanded["p_q"])
+    assert [x["bootstrap_seed"] for x in alone["h"]] == [
+        x["bootstrap_seed"] for x in expanded["h"]
+    ]
+    assert alone["calibration_scope"] == CALIBRATION_SCOPE
 
 
 # ---------- Round-2 screening and MSES ----------
@@ -283,7 +342,8 @@ def test_all_adaptive_selectors_are_outer_nested_and_complete():
         candidate_names=["sieve1_sieve1", "sieve2_sieve2"], head_kwargs=HK,
     ))
     expected = {"product", "h_only", "q_only", "sum", "max", "variance_only", "random",
-                "fixed_kernel", "fixed_sieve1", "biasvar_mult", "biasvar_add", "MSES"}
+                "fixed_kernel", "fixed_sieve1", "biasvar_mult", "biasvar_add", "MSES",
+                "MSES_holm_sensitivity", "MSES_max_variance_sensitivity"}
     assert set(out["phi_by_selector"]) == expected
     for fold in out["folds"]:
         assert fold["outer_train_test_disjoint"] and fold["inner_coverage_complete"]

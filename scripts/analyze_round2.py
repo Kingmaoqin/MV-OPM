@@ -23,10 +23,12 @@ from scipy import stats
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROUND2 = os.path.join(ROOT, "results", "mvopm_round2")
+FROZEN_FINAL_ROOT = os.path.join(ROUND2, "final")
 SELECTORS = [
     "MSES", "product", "variance_only", "fixed_sieve1", "fixed_kernel",
     "biasvar_mult", "biasvar_add", "oracle",
 ]
+SENSITIVITY_SELECTORS = ["MSES_holm_sensitivity", "MSES_max_variance_sensitivity"]
 COLORS = {
     "MSES": "#1565c0", "product": "#ef6c00", "variance_only": "#00897b",
     "fixed_sieve1": "#6a1b9a", "fixed_kernel": "#c62828",
@@ -37,6 +39,15 @@ SHORT = {
     "sieve1_sieve1": "S1/S1", "sieve2_sieve2": "S2/S2",
     "sieve3_sieve3": "S3/S3", "ABSTAIN_LIBRARY_INADEQUATE": "ABSTAIN",
 }
+
+
+def _paths_overlap(first: str, second: str) -> bool:
+    first_real, second_real = os.path.realpath(first), os.path.realpath(second)
+    try:
+        common = os.path.commonpath([first_real, second_real])
+    except ValueError:
+        return False
+    return common in {first_real, second_real}
 
 
 def _selector_col(metric: str, selector: str) -> str:
@@ -139,7 +150,13 @@ def mechanism_tables(tasks: pd.DataFrame, tables: str) -> tuple[pd.DataFrame, pd
     ]
     diag = []
     for label, x, y in relations:
-        row = {"relation": label, "x": x, "y": y, **_safe_stats(a2[x], a2[y])}
+        row = {
+            "relation": label,
+            "x": x,
+            "y": y,
+            "analysis_unit": "corruption_cell_mean",
+            **_safe_stats(cells[f"{x}_mean"], cells[f"{y}_mean"]),
+        }
         if label.startswith("theoretical_product"):
             # The algebra predicts a negative slope for the unsigned product.
             pass
@@ -149,7 +166,20 @@ def mechanism_tables(tasks: pd.DataFrame, tables: str) -> tuple[pd.DataFrame, pd
     return cells, diagnostics
 
 
+def _deduplicate_g2_zero_baseline(tasks: pd.DataFrame) -> pd.DataFrame:
+    """Treat frozen G2 severity zero as one shared baseline, preserving raw evidence."""
+    if "study" not in tasks:
+        return tasks.copy()
+    level = pd.to_numeric(
+        tasks.get("proxy_mod_level", pd.Series(np.nan, index=tasks.index)), errors="coerce",
+    )
+    kind = tasks.get("proxy_mod_kind", pd.Series("", index=tasks.index)).astype(str)
+    duplicate = tasks.study.eq("G2") & level.eq(0.0) & kind.ne("additive")
+    return tasks.loc[~duplicate].copy()
+
+
 def selector_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
+    tasks = _deduplicate_g2_zero_baseline(tasks)
     scopes = {
         "flagship_B2_E2": tasks.study.isin(["B2", "C2", "D2", "E2"]),
         "core_plus_switching": tasks.study.isin(["B2", "C2", "D2", "E2", "R"]),
@@ -166,18 +196,27 @@ def selector_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
                 continue
             ratio = _finite(ratio_source)
             regret = _finite(_selector_series(group, "regret", selector))
-            catastrophic = _finite(_selector_series(group, "catastrophic", selector))
+            relative_failure = _finite(_selector_series(group, "catastrophic", selector))
             top1 = _finite(_selector_series(group, "top1", selector))
             top2 = _finite(_selector_series(group, "top2", selector))
             error = _finite(_selector_series(group, "error", selector))
             row = {
                 "scope": scope, "selector": selector, "n_tasks": len(group),
+                "g2_zero_baseline_handling": (
+                    "single_shared_zero_severity_baseline"
+                    if group.study.eq("G2").any() else "not_applicable"
+                ),
                 "n_evaluable": len(ratio), "abstention_or_missing_rate": 1 - len(ratio) / max(len(group), 1),
                 "oracle_ratio_mean": ratio.mean(), "oracle_ratio_median": ratio.median(),
                 "oracle_ratio_q25": ratio.quantile(.25), "oracle_ratio_q75": ratio.quantile(.75),
                 "error_mean": error.mean(), "error_median": error.median(),
                 "regret_mean": regret.mean(), "regret_median": regret.median(),
-                "catastrophic_rate": catastrophic.mean(), "top1_rate": top1.mean(),
+                # ``catastrophic`` is the frozen raw-field name.  It denotes only the
+                # preregistered relative event error > 1.5 * realized oracle error.
+                "relative_oracle_failure_gt_1p5x_rate": relative_failure.mean(),
+                "absolute_ate_error_gt_0p05_rate": float((error > 0.05).mean()),
+                "absolute_ate_error_gt_0p10_rate": float((error > 0.10).mean()),
+                "top1_rate": top1.mean(),
                 "top2_rate": top2.mean(),
             }
             if selector == "MSES":
@@ -195,7 +234,75 @@ def selector_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
     return out
 
 
-def paired_selector_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
+def sensitivity_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
+    """Keep preregistered sensitivity estimators separate from the primary selector table."""
+    scopes = {
+        "flagship_B2_E2": tasks[tasks.study.isin(["B2", "C2", "D2", "E2"])],
+        "core_plus_switching": tasks[
+            tasks.study.isin(["B2", "C2", "D2", "E2", "R"])
+        ],
+    }
+    rows = []
+    for scope, group in scopes.items():
+        for selector in SENSITIVITY_SELECTORS:
+            error = _finite(_selector_series(group, "error", selector))
+            if error.empty:
+                continue
+            ratio = _finite(_selector_series(group, "oracle_ratio", selector))
+            relative_failure = _finite(_selector_series(group, "catastrophic", selector))
+            rows.append({
+                "scope": scope,
+                "selector": selector,
+                "status": "descriptive_sensitivity_not_primary",
+                "n_tasks": len(group),
+                "n_evaluable": len(error),
+                "abstention_or_missing_rate": 1 - len(error) / max(len(group), 1),
+                "error_mean": error.mean(),
+                "error_median": error.median(),
+                "oracle_ratio_mean": ratio.mean(),
+                "oracle_ratio_median": ratio.median(),
+                "relative_oracle_failure_gt_1p5x_rate": relative_failure.mean(),
+                "absolute_ate_error_gt_0p05_rate": float((error > 0.05).mean()),
+                "absolute_ate_error_gt_0p10_rate": float((error > 0.10).mean()),
+            })
+    columns = [
+        "scope", "selector", "status", "n_tasks", "n_evaluable",
+        "abstention_or_missing_rate", "error_mean", "error_median",
+        "oracle_ratio_mean", "oracle_ratio_median",
+        "relative_oracle_failure_gt_1p5x_rate",
+        "absolute_ate_error_gt_0p05_rate", "absolute_ate_error_gt_0p10_rate",
+    ]
+    if rows:
+        out = pd.DataFrame(rows, columns=columns)
+    else:
+        out = pd.DataFrame([{
+            "scope": "frozen_round2",
+            "selector": "not_available",
+            "status": "not_available_in_frozen_corpus",
+        }], columns=columns)
+    _write(out, os.path.join(tables, "selector_sensitivities.csv"))
+    return out
+
+
+def _regime_mean_risk_winners(candidates: pd.DataFrame, studies=None) -> pd.DataFrame:
+    """Estimate each registered regime's risk-optimal candidate without task-level conditioning."""
+    data = candidates.copy()
+    if studies is not None:
+        data = data[data.study.isin(studies)]
+    data["ate_err_numeric"] = pd.to_numeric(data["ate_err"], errors="coerce")
+    risk = (
+        data.dropna(subset=["ate_err_numeric"])
+        .groupby(["study", "config_id", "candidate"], as_index=False)["ate_err_numeric"]
+        .mean()
+        .sort_values(["study", "config_id", "ate_err_numeric", "candidate"])
+    )
+    winners = risk.groupby(["study", "config_id"], as_index=False).first()
+    return winners.rename(columns={
+        "candidate": "mean_risk_oracle", "ate_err_numeric": "mean_risk_oracle_error",
+    })
+
+
+def paired_selector_tables(tasks: pd.DataFrame, candidates: pd.DataFrame, tables: str) -> pd.DataFrame:
     """Paired ATE-error contrasts; positive values favor MSES.
 
     Scientific seeds, rather than task-regime rows, are the independent resampling unit.  This
@@ -210,8 +317,19 @@ def paired_selector_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
         "flagship_B2_E2": core[core.study.isin(["B2", "C2", "D2", "E2"])],
         "R_switching": core[core.study.eq("R")],
     }
-    if "selector::oracle_best" in core:
-        scopes["oracle_not_sieve1"] = core[core["selector::oracle_best"] != "sieve1_sieve1"]
+    regime_winners = _regime_mean_risk_winners(
+        candidates, studies=["B2", "C2", "D2", "E2", "R"],
+    )
+    eligible = set(
+        regime_winners.loc[
+            regime_winners.mean_risk_oracle != "sieve1_sieve1", ["study", "config_id"]
+        ].itertuples(index=False, name=None)
+    )
+    regime_mask = pd.Series(
+        [(study, config) in eligible for study, config in zip(core.study, core.config_id)],
+        index=core.index,
+    )
+    scopes["regime_mean_risk_oracle_not_sieve1"] = core[regime_mask]
     rng = np.random.default_rng(20260812)
     rows = []
     for scope, group in scopes.items():
@@ -248,6 +366,14 @@ def paired_selector_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
             ci_low, ci_high = np.quantile(bootstrap_means, [.025, .975])
             rows.append({
                 "scope": scope, "comparator": comparator,
+                "interval_scope": (
+                    "descriptive_conditional_on_posthoc_fixed_regime_subgroup"
+                    if scope == "regime_mean_risk_oracle_not_sieve1"
+                    else "stratified_scientific_seed_block_bootstrap"
+                ),
+                "subgroup_reestimated_in_bootstrap": bool(
+                    scope != "regime_mean_risk_oracle_not_sieve1"
+                ),
                 "n_paired_task_rows": len(delta),
                 "n_independent_scientific_seed_blocks": n_blocks,
                 "mean_error_reduction_MSES": delta.mean(),
@@ -272,7 +398,7 @@ def screening_tables(tasks: pd.DataFrame, tables: str) -> pd.DataFrame:
                                             pd.Series(dtype=float)))
         rows.append({
             "study": study, "config_id": config_id, "n_tasks": len(group),
-            "abstention_rate": status.eq("ABSTAIN_LIBRARY_INADEQUATE").mean(),
+            "nested_any_fold_abstention_rate": status.eq("ABSTAIN_LIBRARY_INADEQUATE").mean(),
             "survivor_count_mean": survivor.mean(), "survivor_count_median": survivor.median(),
             "oracle_candidate_survival_rate": oracle_survives.mean(),
         })
@@ -322,6 +448,7 @@ def regime_tables(tasks: pd.DataFrame, candidates: pd.DataFrame, tables: str) ->
         r["oracle_best"] = r["selector::oracle_best"]
 
     rr_candidates = candidates[candidates.study == "R"].copy()
+    mean_risk = _regime_mean_risk_winners(rr_candidates, studies=["R"]).set_index("config_id")
     frac_col = "nested_selected_fraction[MSES]"
     rows = []
     for config_id, group in r.groupby("config_id", sort=True):
@@ -331,22 +458,43 @@ def regime_tables(tasks: pd.DataFrame, candidates: pd.DataFrame, tables: str) ->
         mses_freq = cg.groupby("candidate")[frac_col].mean().dropna() if frac_col in cg else pd.Series(dtype=float)
         if mses_freq.empty and "selected_by_MSES" in cg:
             mses_freq = cg.groupby("candidate")["selected_by_MSES"].mean().dropna()
-        match = _finite(_selector_series(group, "top1", "MSES"))
+        mean_risk_oracle = mean_risk.loc[config_id, "mean_risk_oracle"]
+        mean_risk_oracle_error = float(mean_risk.loc[config_id, "mean_risk_oracle_error"])
+        mses_mean_risk_match = float(mses_freq.get(mean_risk_oracle, np.nan))
+        candidate_risks = (
+            cg.assign(ate_err_numeric=pd.to_numeric(cg.ate_err, errors="coerce"))
+            .groupby("candidate").ate_err_numeric.mean().sort_values()
+        )
+        second_gap = float(candidate_risks.iloc[1] - candidate_risks.iloc[0]) if len(candidate_risks) > 1 else np.nan
         meta = group.iloc[0]
         rows.append({
-            "config_id": config_id, "family": meta.family, "n": int(meta.n),
+            "config_id": config_id, "kind": meta.kind, "family": meta.family, "n": int(meta.n),
             "proxy_noise": meta.noise, "p": int(meta.p), "n_rep": len(group),
+            "mean_risk_oracle": mean_risk_oracle,
+            "mean_risk_oracle_error": mean_risk_oracle_error,
+            "mean_risk_second_best_gap": second_gap,
             "modal_oracle": counts.index[0], "modal_oracle_frequency": counts.iloc[0] / len(group),
             "modal_MSES": mses_freq.idxmax() if len(mses_freq) else np.nan,
-            "MSES_oracle_match_rate": match.mean(),
+            "MSES_mean_risk_oracle_match_rate": mses_mean_risk_match,
             "distinct_oracle_winners": int(len(counts)),
         })
     regimes = pd.DataFrame(rows)
     _write(regimes, os.path.join(tables, "oracle_switching_by_regime.csv"))
 
-    freq_rows = []
+    samplewise_freq_rows = []
     for scope_name, group in [("pooled", r), *[(f"family_{f}", r[r.family == f]) for f in "LQNM"]]:
         counts = group.oracle_best.value_counts()
+        for candidate, count in counts.items():
+            samplewise_freq_rows.append({"scope": scope_name, "candidate": candidate, "count": count,
+                              "frequency": count / len(group)})
+    _write(pd.DataFrame(samplewise_freq_rows), os.path.join(tables, "samplewise_oracle_argmin_frequencies.csv"))
+
+    freq_rows = []
+    for scope_name, group in [
+        ("pooled", regimes),
+        *[(f"family_{f}", regimes[regimes.family == f]) for f in "LQNM"],
+    ]:
+        counts = group.mean_risk_oracle.value_counts()
         for candidate, count in counts.items():
             freq_rows.append({"scope": scope_name, "candidate": candidate, "count": count,
                               "frequency": count / len(group)})
@@ -354,18 +502,18 @@ def regime_tables(tasks: pd.DataFrame, candidates: pd.DataFrame, tables: str) ->
     _write(frequencies, os.path.join(tables, "oracle_winner_frequencies.csv"))
 
     transitions = []
-    core = r[r.kind == "core"]
-    for (family, noise, seed), group in core.groupby(["family", "noise", "scientific_seed"]):
-        by_n = group.set_index("n").oracle_best.to_dict()
+    core = regimes[regimes.kind == "core"]
+    for (family, noise), group in core.groupby(["family", "proxy_noise"]):
+        by_n = group.set_index("n").mean_risk_oracle.to_dict()
         if 1500 in by_n and 6000 in by_n:
             transitions.append({"transition": "sample_size", "family": family, "stratum": noise,
-                                "scientific_seed": seed, "from": by_n[1500], "to": by_n[6000],
+                                "from": by_n[1500], "to": by_n[6000],
                                 "changed": by_n[1500] != by_n[6000]})
-    for (family, n, seed), group in core.groupby(["family", "n", "scientific_seed"]):
-        by_noise = group.set_index("noise").oracle_best.to_dict()
+    for (family, n), group in core.groupby(["family", "n"]):
+        by_noise = group.set_index("proxy_noise").mean_risk_oracle.to_dict()
         if "low" in by_noise and "high" in by_noise:
             transitions.append({"transition": "proxy_noise", "family": family, "stratum": n,
-                                "scientific_seed": seed, "from": by_noise["low"], "to": by_noise["high"],
+                                "from": by_noise["low"], "to": by_noise["high"],
                                 "changed": by_noise["low"] != by_noise["high"]})
     transitions = pd.DataFrame(transitions)
     _write(transitions, os.path.join(tables, "oracle_winner_transitions.csv"))
@@ -379,10 +527,18 @@ def robustness_tables(tasks: pd.DataFrame, tables: str) -> dict[str, pd.DataFram
         for config_id, group in tasks[tasks.study == study].groupby("config_id", sort=True):
             row = {"study": study, "config_id": config_id, "n_rep": len(group)}
             if study == "G2":
+                level = float(group.proxy_mod_level.iloc[0])
+                kind = group.proxy_mod_kind.iloc[0]
+                if level == 0.0 and kind != "additive":
+                    continue
                 row.update({
-                    "corruption_kind": group.proxy_mod_kind.iloc[0],
-                    "corruption_level": float(group.proxy_mod_level.iloc[0]),
+                    "corruption_kind": kind,
+                    "corruption_level": level,
                     "n": int(group.n.iloc[0]),
+                    "baseline_handling": (
+                        "single_shared_zero_severity_baseline"
+                        if level == 0.0 else "distinct_corruption_cell"
+                    ),
                 })
             else:
                 row.update({
@@ -393,8 +549,20 @@ def robustness_tables(tasks: pd.DataFrame, tables: str) -> dict[str, pd.DataFram
                 for metric in ["oracle_ratio", "regret", "catastrophic", "error", "top1"]:
                     values = _finite(_selector_series(group, metric, selector))
                     if len(values):
-                        row[f"{metric}_mean[{selector}]"] = values.mean()
-                        row[f"{metric}_median[{selector}]"] = values.median()
+                        label = (
+                            "relative_oracle_failure_gt_1p5x"
+                            if metric == "catastrophic" else metric
+                        )
+                        row[f"{label}_mean[{selector}]"] = values.mean()
+                        row[f"{label}_median[{selector}]"] = values.median()
+                errors = _finite(_selector_series(group, "error", selector))
+                if len(errors):
+                    row[f"absolute_ate_error_gt_0p05_rate[{selector}]"] = float(
+                        (errors > 0.05).mean()
+                    )
+                    row[f"absolute_ate_error_gt_0p10_rate[{selector}]"] = float(
+                        (errors > 0.10).mean()
+                    )
             survivor = _finite(group.get(_selector_col("survivor_count", "MSES"), pd.Series(dtype=float)))
             row["survivor_count_mean[MSES]"] = survivor.mean()
             rows.append(row)
@@ -408,6 +576,17 @@ def robustness_tables(tasks: pd.DataFrame, tables: str) -> dict[str, pd.DataFram
         ign_ate = pd.Series([d.get("ate_err", np.nan) for d in ign], dtype=float)
         row = {"config_id": config_id, "c_U": float(group.c_U.iloc[0]), "n_rep": len(group),
                "ignorability_ate_error_mean": _finite(ign_ate).mean()}
+        overlap_available = all(col in group for col in (
+            "true_overlap_min_probability_mean", "true_overlap_min_probability_q05",
+        ))
+        row["overlap_status"] = (
+            "available" if overlap_available else "not_available_in_frozen_corpus"
+        )
+        for overlap_col in (
+            "true_overlap_min_probability_mean", "true_overlap_min_probability_q05",
+        ):
+            if overlap_col in group:
+                row[overlap_col] = _finite(group[overlap_col]).mean()
         for selector in ["MSES", "fixed_sieve1", "fixed_kernel", "oracle"]:
             error = _finite(_selector_series(group, "error", selector))
             row[f"proximal_ate_error_mean[{selector}]"] = error.mean()
@@ -419,12 +598,27 @@ def robustness_tables(tasks: pd.DataFrame, tables: str) -> dict[str, pd.DataFram
     i_rows = []
     for config_id, group in tasks[tasks.study == "I2"].groupby("config_id", sort=True):
         status = group.get(_selector_col("status", "MSES"), pd.Series(index=group.index, dtype=object)).astype(str)
-        abstain = status.eq("ABSTAIN_LIBRARY_INADEQUATE")
+        nested_abstain = status.eq("ABSTAIN_LIBRARY_INADEQUATE")
+        deployment_abstain = pd.to_numeric(
+            group.get("selector::global_oof_mses_abstained", pd.Series(index=group.index, dtype=float)),
+            errors="coerce",
+        )
+        fold_abstention = _finite(_selector_series(group, "fold_abstention_rate", "MSES"))
+        if "library_scenario_label" in group:
+            scenario_label = group.library_scenario_label.iloc[0]
+        else:
+            scenario_label = group.library_truth.iloc[0]
         i_rows.append({
-            "config_id": config_id, "library_truth": group.library_truth.iloc[0], "n_rep": len(group),
-            "abstention_rate": abstain.mean(),
-            "false_abstention_rate": abstain.mean() if "adequate_easy" in str(group.library_truth.iloc[0]) else np.nan,
-            "true_rejection_rate": abstain.mean() if "inadequate" in str(group.library_truth.iloc[0]) else np.nan,
+            "config_id": config_id,
+            "library_scenario_label": scenario_label,
+            "n_rep": len(group),
+            "nested_any_fold_abstention_rate": nested_abstain.mean(),
+            "deployment_abstention_rate": _finite(deployment_abstain).mean(),
+            "mean_outer_fold_abstention_rate": fold_abstention.mean(),
+            "outer_fold_abstention_status": (
+                "available" if len(fold_abstention)
+                else "not_available_in_frozen_corpus"
+            ),
             "survivor_count_mean": _finite(group.get(_selector_col("survivor_count", "MSES"), pd.Series(dtype=float))).mean(),
         })
     i2 = pd.DataFrame(i_rows)
@@ -440,15 +634,37 @@ def rhc_tables(tasks: pd.DataFrame, candidates: pd.DataFrame, tables: str) -> tu
     j["ate_scalar"] = j.ate.map(_first_number)
     j["ate_lo_scalar"] = j.ate_lo.map(_first_number)
     j["ate_hi_scalar"] = j.ate_hi.map(_first_number)
-    for col in ["ess", "max_q", "q_balance", "survivor_count"]:
-        j[col] = pd.to_numeric(j[col], errors="coerce")
+    diagnostic_sources = {}
+    for repaired, legacy in (
+        ("deployment_ess", "ess"),
+        ("deployment_max_q", "max_q"),
+        ("deployment_q_balance", "q_balance"),
+    ):
+        source = repaired if repaired in j else legacy
+        diagnostic_sources[repaired] = source
+        j[repaired] = pd.to_numeric(j[source], errors="coerce")
+    j["survivor_count"] = pd.to_numeric(j["survivor_count"], errors="coerce")
     summary = pd.DataFrame([{
         "n_repeated_splits": len(j), "ate_mean": j.ate_scalar.mean(), "ate_median": j.ate_scalar.median(),
         "ate_sd": j.ate_scalar.std(ddof=1), "ate_min": j.ate_scalar.min(), "ate_max": j.ate_scalar.max(),
         "negative_effect_rate": (j.ate_scalar < 0).mean(),
-        "ci_excludes_zero_rate": ((j.ate_lo_scalar > 0) | (j.ate_hi_scalar < 0)).mean(),
-        "ess_mean": j.ess.mean(), "ess_min": j.ess.min(), "max_q_mean": j.max_q.mean(),
-        "max_q_max": j.max_q.max(), "q_balance_mean": j.q_balance.mean(),
+        "descriptive_interval_excludes_zero_rate": (
+            (j.ate_lo_scalar > 0) | (j.ate_hi_scalar < 0)
+        ).mean(),
+        "ate_source": j.get("ate_source", pd.Series(["legacy_unspecified"])).iloc[0],
+        "ate_interval_scope": j.get(
+            "ate_interval_scope", pd.Series(["legacy_unspecified"])
+        ).iloc[0],
+        "diagnostic_source": "deployment_selected_candidate",
+        "deployment_ess_mean": j.deployment_ess.mean(),
+        "deployment_ess_min": j.deployment_ess.min(),
+        "deployment_max_q_mean": j.deployment_max_q.mean(),
+        "deployment_max_q_max": j.deployment_max_q.max(),
+        "deployment_q_balance_mean": j.deployment_q_balance.mean(),
+        "legacy_diagnostic_columns_used": bool(any(
+            source in {"ess", "max_q", "q_balance"}
+            for source in diagnostic_sources.values()
+        )),
         "survivor_count_mean": j.survivor_count.mean(),
     }])
     _write(summary, os.path.join(tables, "rhc_stability_summary.csv"))
@@ -571,7 +787,11 @@ def figure_switching(regimes: pd.DataFrame, figures: str):
             ax.add_patch(plt.Rectangle((j, i), 1, 1, facecolor="#f5f5f5", edgecolor="white"))
             if len(cell):
                 row = cell.iloc[0]
-                text = f"O {SHORT.get(row.modal_oracle, row.modal_oracle)}\nM {SHORT.get(row.modal_MSES, row.modal_MSES)}\nmatch {row.MSES_oracle_match_rate:.0%}"
+                text = (
+                    f"O {SHORT.get(row.mean_risk_oracle, row.mean_risk_oracle)}\n"
+                    f"M {SHORT.get(row.modal_MSES, row.modal_MSES)}\n"
+                    f"match {row.MSES_mean_risk_oracle_match_rate:.0%}"
+                )
                 ax.text(j + .5, i + .5, text, ha="center", va="center", fontsize=8)
     ax.set_xticks(np.arange(len(columns)) + .5, columns)
     ax.set_yticks(np.arange(len(families)) + .5, families)
@@ -594,7 +814,7 @@ def figure_selection(tasks: pd.DataFrame, figures: str):
                     medianprops={"color": "black"})
     for patch, selector in zip(bp["boxes"], selectors):
         patch.set_facecolor(COLORS.get(selector, "#90a4ae")); patch.set_alpha(.72)
-    # Plot every evaluable task so catastrophic tails remain visible rather than being hidden by
+    # Plot every evaluable task so absolute and relative tails remain visible rather than being hidden by
     # the conventional boxplot whiskers. Jitter is deterministic and purely presentational.
     rng = np.random.default_rng(20260813)
     for position, (values, selector) in enumerate(zip(data, selectors), start=1):
@@ -614,8 +834,14 @@ def figure_rhc(tasks: pd.DataFrame, selection: pd.DataFrame, figures: str):
     j["ate_scalar"] = j.ate.map(_first_number)
     j["ate_lo_scalar"] = j.ate_lo.map(_first_number)
     j["ate_hi_scalar"] = j.ate_hi.map(_first_number)
-    j["ess"] = pd.to_numeric(j.ess, errors="coerce")
-    j["max_q"] = pd.to_numeric(j.max_q, errors="coerce")
+    ess_source = "deployment_ess" if "deployment_ess" in j else "ess"
+    max_q_source = "deployment_max_q" if "deployment_max_q" in j else "max_q"
+    j["deployment_ess"] = pd.to_numeric(j[ess_source], errors="coerce")
+    ate_source = (
+        str(j.ate_source.iloc[0]) if "ate_source" in j
+        else "legacy_global_oof_adaptive_candidate"
+    )
+    j["deployment_max_q"] = pd.to_numeric(j[max_q_source], errors="coerce")
     fig, axes = plt.subplots(2, 2, figsize=(12.2, 9.0))
     axes = axes.flat
     x = np.arange(len(selection)); width = .25
@@ -649,8 +875,13 @@ def figure_rhc(tasks: pd.DataFrame, selection: pd.DataFrame, figures: str):
     axes[2].errorbar(ate, y, xerr=np.vstack([ate - lo, hi - ate]),
                      fmt="o", ms=3, color="#c62828", alpha=.75)
     axes[2].axvline(0, color="black", ls="--", lw=1)
-    axes[2].set(xlabel="ATE with 95% CI", ylabel="Repeated split")
-    axes[3].scatter(j.ess, j.max_q, color="#00897b", alpha=.78)
+    interval_label = (
+        "ATE with descriptive outer-OOF Wald interval"
+        if ate_source == "nested_outer_oof_adaptive_mses"
+        else "legacy adaptive-candidate ATE with naive post-selection interval"
+    )
+    axes[2].set(xlabel=interval_label, ylabel="Repeated split")
+    axes[3].scatter(j.deployment_ess, j.deployment_max_q, color="#00897b", alpha=.78)
     axes[3].set(xlabel="Effective sample size", ylabel="Maximum q weight")
     axes[3].set_title("Weight/ESS diagnostic")
     fig.suptitle("Figure 6. RHC screening, selection, and repeated-split stability", fontweight="bold")
@@ -674,24 +905,11 @@ def evidence_summary(tasks: pd.DataFrame, selectors: pd.DataFrame, cells: pd.Dat
     single = cells[((cells.r_h > 0) & (cells.r_q == 0)) | ((cells.r_h == 0) & (cells.r_q > 0))]
     relation = diagnostics.set_index("relation") if len(diagnostics) else pd.DataFrame()
     r_tasks = tasks[tasks.study == "R"]
-    unique_oracles = sorted(r_tasks.get("selector::oracle_best", pd.Series(dtype=str)).dropna().astype(str).unique())
-    non_sieve = tasks[tasks.study.isin(["B2", "C2", "D2", "E2", "R"]) &
-                      tasks.get("selector::oracle_best", pd.Series(index=tasks.index)).ne("sieve1_sieve1")]
-    fixed_sieve_error = pd.to_numeric(
-        non_sieve.get(
-            _selector_col("error", "fixed_sieve1"),
-            pd.Series(index=non_sieve.index, dtype=float),
-        ),
-        errors="coerce",
-    )
-    mses_error = pd.to_numeric(
-        non_sieve.get(
-            _selector_col("error", "MSES"), pd.Series(index=non_sieve.index, dtype=float)
-        ),
-        errors="coerce",
-    )
-    paired_keep = np.isfinite(fixed_sieve_error) & np.isfinite(mses_error)
-    paired_sieve_gain = fixed_sieve_error[paired_keep] - mses_error[paired_keep]
+    unique_oracles = sorted(regimes.mean_risk_oracle.dropna().astype(str).unique())
+    fixed_sieve_comparison = paired[
+        (paired.scope == "regime_mean_risk_oracle_not_sieve1")
+        & (paired.comparator == "fixed_sieve1")
+    ]
     out = {
         "counts": tasks.study.value_counts().sort_index().to_dict(),
         "mechanism": {
@@ -708,11 +926,14 @@ def evidence_summary(tasks: pd.DataFrame, selectors: pd.DataFrame, cells: pd.Dat
         "switching": {
             "distinct_oracle_candidates": unique_oracles,
             "n_distinct_oracle_candidates": len(unique_oracles),
-            "regimes_with_non_sieve1_modal_oracle": int((regimes.modal_oracle != "sieve1_sieve1").sum()),
+            "regimes_with_non_sieve1_mean_risk_oracle": int((regimes.mean_risk_oracle != "sieve1_sieve1").sum()),
             "n_regimes": len(regimes),
-            "sample_or_proxy_transition_rate": float(pd.to_numeric(transitions.changed, errors="coerce").mean()),
-            "mean_MSES_oracle_match_rate": float(regimes.MSES_oracle_match_rate.mean()),
-            "mean_fixed_sieve1_minus_MSES_error_when_oracle_not_sieve1": float(paired_sieve_gain.mean()),
+            "regime_mean_risk_transition_rate": float(pd.to_numeric(transitions.changed, errors="coerce").mean()),
+            "mean_MSES_mean_risk_oracle_match_rate": float(regimes.MSES_mean_risk_oracle_match_rate.mean()),
+            "mean_fixed_sieve1_minus_MSES_error_in_non_sieve1_mean_risk_regimes": (
+                float(fixed_sieve_comparison.mean_error_reduction_MSES.iloc[0])
+                if len(fixed_sieve_comparison) else float("nan")
+            ),
         },
         "abstention": robustness.get("I2", pd.DataFrame()).to_dict(orient="records"),
         "rhc": {} if rhc.empty else rhc.iloc[0].to_dict(),
@@ -739,21 +960,34 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--phase", choices=["final", "development"], default="final")
     parser.add_argument("--allow-incomplete", action="store_true")
+    parser.add_argument(
+        "--output-root",
+        help="disjoint analysis directory; required when reading the frozen final aggregates",
+    )
     args = parser.parse_args()
+    if args.phase == "final" and not args.output_root:
+        raise RuntimeError(
+            "refusing to overwrite frozen Round-2 final analysis; provide --output-root"
+        )
     phase = os.path.join(ROUND2, args.phase)
+    analysis = args.output_root or os.path.join(phase, "analysis")
+    if _paths_overlap(analysis, FROZEN_FINAL_ROOT):
+        raise RuntimeError(
+            "refusing analysis output that intersects the frozen Round-2 final root"
+        )
     audit_path = os.path.join(phase, "AGGREGATION_AUDIT.json")
     audit = json.load(open(audit_path))
     if not args.allow_incomplete and (audit["missing_rows"] or audit["failed_rows"]):
         raise RuntimeError(f"refusing incomplete confirmatory analysis: {audit}")
     tasks = pd.read_csv(os.path.join(phase, "raw.csv"), low_memory=False)
     candidates = pd.read_csv(os.path.join(phase, "raw_candidates.csv"), low_memory=False)
-    analysis = os.path.join(phase, "analysis")
     tables, figures = os.path.join(analysis, "tables"), os.path.join(analysis, "figures")
     os.makedirs(tables, exist_ok=True); os.makedirs(figures, exist_ok=True)
 
     cells, diagnostics = mechanism_tables(tasks, tables)
     selectors = selector_tables(tasks, tables)
-    paired = paired_selector_tables(tasks, tables)
+    sensitivity_tables(tasks, tables)
+    paired = paired_selector_tables(tasks, candidates, tables)
     screening_tables(tasks, tables)
     candidate_tables(candidates, tables)
     regimes, frequencies, transitions = regime_tables(tasks, candidates, tables)
@@ -771,8 +1005,17 @@ def main():
                                robustness, rhc, paired)
     with open(os.path.join(analysis, "EVIDENCE_SUMMARY.json"), "w") as f:
         json.dump(summary, f, indent=2, allow_nan=False)
+    rhc_source = "none" if rhc.empty else str(rhc.iloc[0].get("ate_source", "legacy_unspecified"))
+    rhc_ate_note = (
+        "The primary repaired ATE is the nested outer-OOF adaptive estimate; its Wald interval is "
+        "descriptive and has no post-selection coverage guarantee. Deployment-candidate diagnostics "
+        "are separately prefixed."
+        if rhc_source == "nested_outer_oof_adaptive_mses"
+        else "The frozen legacy ATE is a full-sample adaptive-candidate estimate with a naive "
+        "post-selection interval; it is not a nested or independent validation estimate."
+    )
     with open(os.path.join(analysis, "README.md"), "w") as f:
-        f.write("""# Round-2 analysis artifacts
+        f.write(f"""# Round-2 analysis artifacts
 
 All files here are deterministic reconstructions from `final/raw.csv` and
 `final/raw_candidates.csv`, which are themselves reconstructed from the immutable per-task
@@ -786,7 +1029,7 @@ diagnostics; `nested_selected_fraction[*]` records the confirmatory outer-fold c
 
 For the non-oracle RHC repeated-split study (J2), candidate-frequency tables explicitly separate
 the full-sample OOF deployment screen/decision from the four outer-fold choices stored in
-`nested_selected_by_fold`. The reported deployment ATEs are not an independent validation sample.
+`nested_selected_by_fold`. {rhc_ate_note}
 
 `tables/` contains mechanism, candidate, selector, screening, switching, robustness, abstention,
 and RHC summaries. `figures/` contains the six claim-directed figures required by the Round-2

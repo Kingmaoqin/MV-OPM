@@ -7,8 +7,13 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
 OUT = os.path.join(ROOT, "results", "mvopm_round2")
 SEED_PATH = os.path.join(ROOT, "configs", "seeds", "mvopm_round2_final.json")
+FROZEN_FINAL_ERROR = (
+    "Round-2 final is frozen and cannot be rebuilt by remediated code. Establish a new program "
+    "ID, preregistration, disjoint seed registry, manifest name, and result root first."
+)
 
 
 def _slug(value) -> str:
@@ -34,8 +39,20 @@ def _cfg(phase: str) -> dict:
 
 
 def build(phase: str) -> list[dict]:
+    if phase == "final":
+        raise RuntimeError(FROZEN_FINAL_ERROR)
     from opm.experiments.mvopm_round2.regime_matrix import frozen_regimes
+    from opm.provenance import git_state
 
+    source = git_state(ROOT)
+    allow_dirty = os.environ.get("MVOPM_ALLOW_DIRTY_MANIFEST") == "1"
+    if source["commit"] == "nogit":
+        raise RuntimeError("refusing to build a scientific manifest without a git commit")
+    if source["dirty"] and not allow_dirty:
+        raise RuntimeError(
+            "refusing to build a manifest from a dirty worktree; commit the remediation first "
+            "or set MVOPM_ALLOW_DIRTY_MANIFEST=1 for explicitly nonconfirmatory development"
+        )
     seeds = json.load(open(SEED_PATH))
     bank = seeds["scientific_seeds"]
     development_bank = seeds["development_only_seeds"]
@@ -59,6 +76,8 @@ def build(phase: str) -> list[dict]:
             "bootstrap_seed": 700000000 + int(scientific_seed) + 10000 * config_index,
             "bank_seed": 800000000 + int(scientific_seed) + 10000 * config_index,
             "config_id": config_id, "K": K, "cfg": cfg, **kw,
+            "source_commit": source["commit"],
+            "require_clean_source": not allow_dirty,
         }
         row["out_path"] = os.path.join(
             OUT, phase, study, _slug(config_id), f"seed{scientific_seed}", "result.json"
@@ -99,6 +118,8 @@ def build(phase: str) -> list[dict]:
 
     for kind in ("additive", "missing", "shift", "heavy_tail"):
         for level in (0.0, 0.1, 0.2, 0.3):
+            if level == 0.0 and kind != "additive":
+                continue  # one shared no-corruption baseline; do not pseudoreplicate it four times
             for seed in use("G2", bank["G2"], 1):
                 add(study="G2", dispatch="selection_v2", scientific_seed=seed,
                     config_id=f"S1_{kind}{level}_n4000", K=4, scenario="S1", n=4000, c_U=1.0,
@@ -113,17 +134,19 @@ def build(phase: str) -> list[dict]:
                     c_U=1.0, regime=regime)
 
     inadequacy = [
-        ("easy_L_full", {"family": "L", "proxy_noise": "low", "p": 10}, None, {}, "adequate_easy"),
+        ("easy_L_full", {"family": "L", "proxy_noise": "low", "p": 10}, None, {},
+         "engineered_easy_full_library"),
         ("N_sieve1_only", {"family": "N", "proxy_noise": "low", "p": 10},
-         ["sieve1_sieve1"], {}, "inadequate_constrained_library"),
+         ["sieve1_sieve1"], {}, "engineered_nonlinear_sieve1_only"),
         ("N_kernel_overregularized", {"family": "N", "proxy_noise": "high", "p": 10},
-         ["kernel_kernel"], {"weight_decay": 1.0}, "inadequate_severe_regularization"),
+         ["kernel_kernel"], {"weight_decay": 1.0}, "engineered_overregularized_kernel"),
     ]
     for config_id, regime, candidates, override, truth in inadequacy:
         for seed in use("I2", bank["I2"], 1):
             add(study="I2", dispatch="selection_v2", scientific_seed=seed,
                 config_id=config_id, K=2, scenario="bridge_complexity", n=4000, c_U=1.0,
-                regime=regime, candidate_names=candidates, bridge_override=override, library_truth=truth)
+                regime=regime, candidate_names=candidates, bridge_override=override,
+                library_scenario_label=truth)
 
     for seed in use("J2", bank["J2"], 1):
         add(study="J2", dispatch="rhc_v2", scientific_seed=seed,

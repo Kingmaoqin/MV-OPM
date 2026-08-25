@@ -8,15 +8,16 @@ import numpy as np
 from ..candidates.library import CANDIDATE_NAMES, CandidateSet
 from ..estimator.crossfit import make_folds
 from ..estimator.pseudo_outcome import compute_phi
-from ..estimator.tau_head import ate_with_ci, fit_cate_and_ate
+from ..estimator.tau_head import ate_with_ci, crossfit_cate_predictions
 from ..validation.oof import fit_mses_on_oof
 from ..validation.selector import SCORE_NAMES, compute_scores, select
-from ..validation.selector_v2 import ABSTAIN
+from ..validation.selector_v2 import ABSTAIN, select_mses
 
 EPS = 1e-8
+ATE_INTERVAL_SCOPE = "descriptive_outer_oof_wald_no_post_selection_coverage_guarantee"
 
 
-def _fold_selectors(fitted: dict, names: list[str], seed: int) -> dict:
+def _fold_selectors(fitted: dict, names: list[str], seed: int, alpha: float) -> dict:
     """All adaptive comparators choose from the same inner-OOF validation population."""
     old_scores = compute_scores(fitted["discrepancy"], "rff_l2")
     selected = {s: select(old_scores[s]) for s in SCORE_NAMES}
@@ -28,6 +29,15 @@ def _fold_selectors(fitted: dict, names: list[str], seed: int) -> dict:
     selected["fixed_kernel"] = "kernel_kernel" if "kernel_kernel" in names else names[0]
     selected["fixed_sieve1"] = "sieve1_sieve1" if "sieve1_sieve1" in names else names[0]
     selected["MSES"] = fitted["mses"]["selected"]
+    selected["MSES_holm_sensitivity"] = select_mses(
+        fitted["tests"], fitted["uncertainty"], alpha=alpha, adjustment="holm",
+    )["selected"]
+    selected["MSES_max_variance_sensitivity"] = select_mses(
+        fitted["tests"],
+        fitted["uncertainty"],
+        alpha=alpha,
+        variance_key="variance_max",
+    )["selected"]
 
     Dh = np.array([fitted["discrepancy"][n]["D_h_rff_l2"] for n in names])
     Dq = np.array([fitted["discrepancy"][n]["D_q_rff_l2"] for n in names])
@@ -55,6 +65,7 @@ class NestedMSESConfig:
     candidate_names: list | None = None
     bridge_kwargs: dict = field(default_factory=dict)
     head_kwargs: dict = field(default_factory=dict)
+    compute_cate_oof: bool = True
 
 
 def nested_mses(view, cfg: NestedMSESConfig) -> dict:
@@ -66,8 +77,18 @@ def nested_mses(view, cfg: NestedMSESConfig) -> dict:
     split_seed = cfg.seed if cfg.split_seed is None else cfg.split_seed
     outer = make_folds(n, cfg.outer_folds, split_seed)
     all_idx = np.arange(n)
-    selector_names = [*SCORE_NAMES, "variance_only", "random", "fixed_kernel", "fixed_sieve1",
-                      "biasvar_mult", "biasvar_add", "MSES"]
+    selector_names = [
+        *SCORE_NAMES,
+        "variance_only",
+        "random",
+        "fixed_kernel",
+        "fixed_sieve1",
+        "biasvar_mult",
+        "biasvar_add",
+        "MSES",
+        "MSES_holm_sensitivity",
+        "MSES_max_variance_sensitivity",
+    ]
     phi_by_selector = {s: np.full((n, K), np.nan) for s in selector_names}
     folds = []
     abstained = False
@@ -88,7 +109,7 @@ def nested_mses(view, cfg: NestedMSESConfig) -> dict:
             alpha=cfg.alpha,
         )
         decision = fitted["mses"]
-        selected = _fold_selectors(fitted, names, cfg.seed + 900000 + of)
+        selected = _fold_selectors(fitted, names, cfg.seed + 900000 + of, cfg.alpha)
         audit = {
             "fold": of,
             "outer_train": outer_train,
@@ -141,8 +162,14 @@ def nested_mses(view, cfg: NestedMSESConfig) -> dict:
             if candidate_name != ABSTAIN:
                 phi_by_selector[selector_name][outer_test] = phi_by_candidate[candidate_name]
 
+    abstained_by_selector = {
+        selector_name: any(
+            fold["selected_by_selector"][selector_name] == ABSTAIN for fold in folds
+        )
+        for selector_name in selector_names
+    }
     for selector_name, values in phi_by_selector.items():
-        if selector_name == "MSES" and abstained:
+        if abstained_by_selector[selector_name]:
             continue
         if not np.all(np.isfinite(values)):
             raise RuntimeError(f"outer OOF coverage invariant failed for {selector_name}")
@@ -169,10 +196,24 @@ def nested_mses(view, cfg: NestedMSESConfig) -> dict:
             "ate_vector": None,
             "ate_by_selector": ate_by_selector,
             "ate_vector_by_selector": ate_vector_by_selector,
+            "abstained_by_selector": abstained_by_selector,
+            "ate_interval_scope": ATE_INTERVAL_SCOPE,
+            "cate_oof": None,
             "predict_cate": None,
         }
     phi = phi_by_selector["MSES"]
-    tau_head, g0_head, ate = fit_cate_and_ate(view.X, phi, K, cfg.device, cfg.seed, cfg.head_kwargs)
+    ate = ate_by_selector["MSES"]
+    cate_oof = None
+    if cfg.compute_cate_oof:
+        cate_oof = crossfit_cate_predictions(
+            view.X,
+            phi,
+            K,
+            n_folds=cfg.outer_folds,
+            device=cfg.device,
+            seed=cfg.seed + 700000,
+            head_kwargs=cfg.head_kwargs,
+        )
     return {
         "status": "ok",
         "abstained": False,
@@ -180,11 +221,14 @@ def nested_mses(view, cfg: NestedMSESConfig) -> dict:
         "phi_by_selector": phi_by_selector,
         "folds": folds,
         "selected": [f["selected"] for f in folds],
-        "tau_head": tau_head,
-        "g0_head": g0_head,
+        "tau_head": None,
+        "g0_head": None,
         "ate": ate,
         "ate_vector": np.array([ate[k]["ate"] for k in range(1, K)]),
         "ate_by_selector": ate_by_selector,
         "ate_vector_by_selector": ate_vector_by_selector,
-        "predict_cate": lambda X: tau_head.predict(X).reshape(X.shape[0], K - 1),
+        "abstained_by_selector": abstained_by_selector,
+        "ate_interval_scope": ATE_INTERVAL_SCOPE,
+        "cate_oof": cate_oof,
+        "predict_cate": None,
     }

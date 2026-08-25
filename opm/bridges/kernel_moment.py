@@ -1,16 +1,23 @@
-"""Kernel-moment (U-statistic) estimation of outcome/treatment bridges (spec 1.5).
+"""Kernel-moment estimation of outcome/treatment bridges.
 
 For arm k, Gaussian kernel Kern(a,b)=exp(-||a-b||^2/(2 bw^2)):
 
-  L_h = 1/(B(B-1)) sum_{i!=j} R_i R_j Kern(z_i,z_j),
+  L_h = 1/B^2 sum_{i,j} R_i R_j Kern(z_i,z_j),
         R_i = 1{T_i=k}(Y_i - h_k(W_i,X_i)),  z_i = std(concat(V_i,X_i))
-  L_q = 1/(B(B-1)) sum_{i!=j} S_i S_j Kern(u_i,u_j),
+  L_q = 1/B^2 sum_{i,j} S_i S_j Kern(u_i,u_j),
         S_i = 1{T_i=k} q_k(V_i,X_i) - 1,     u_i = std(concat(W_i,X_i))
 
-with q_k = 1 + softplus(g_k), clipped at q_max=50.  Bandwidth: median heuristic on
-the training fold.  EMA(0.99) weights are used for all downstream predictions.
-Early stopping uses the random-Fourier-feature bridge-residual diagnostic (Section 6.1).
-No adversarial inner loop (NMMR-style closed form).
+The nonnegative V-statistic is used for optimization because the unbiased off-diagonal
+U-statistic is indefinite in finite samples and can be unbounded below when h is unbounded.
+The U-statistic implementation is retained only as an evaluation primitive.
+For a minibatch of size B, the V-statistic includes a diagonal residual-square term of order
+1/B. It is therefore an explicitly regularized finite-batch objective and a new estimator, not an
+unbiased drop-in replacement for the population cross-moment norm.
+
+The treatment bridge uses q_k = q_min + softplus(g_k), clipped at q_max=50, so its
+representable support is the full positive interval (q_min, q_max] rather than [1, q_max].
+Bandwidths use the training-fold median heuristic. EMA weights are used downstream and
+early stopping uses a held-out RFF bridge-residual diagnostic.
 """
 from __future__ import annotations
 
@@ -42,6 +49,27 @@ def ustat_quadratic(vals: torch.Tensor, Kmat: torch.Tensor) -> torch.Tensor:
     return quad / (B * (B - 1))
 
 
+def vstat_quadratic(vals: torch.Tensor, Kmat: torch.Tensor) -> torch.Tensor:
+    """Nonnegative empirical RKHS squared norm used as the training objective.
+
+    For a positive-semidefinite kernel matrix this is ``vals.T @ K @ vals / B**2``.
+    A zero clamp protects the lower-bound invariant from tiny floating-point negative
+    eigenvalues without changing the population target.
+    """
+    B = vals.shape[0]
+    if B == 0:
+        raise ValueError("vstat_quadratic requires at least one observation")
+    quad = vals @ (Kmat @ vals)
+    return torch.clamp(quad, min=0.0) / (B * B)
+
+
+def positive_q_link(raw: torch.Tensor, *, q_min: float, q_max: float) -> torch.Tensor:
+    """Map an unrestricted network output onto the full positive bridge interval."""
+    if not 0.0 < q_min < q_max:
+        raise ValueError("q bounds must satisfy 0 < q_min < q_max")
+    return torch.clamp(F.softplus(raw) + q_min, max=q_max)
+
+
 @dataclass
 class BridgeConfig:
     K: int
@@ -55,6 +83,7 @@ class BridgeConfig:
     arm_emb: int = 8
     ema_decay: float = 0.99
     q_max: float = 50.0
+    q_min: float = 1e-4
     n_rff: int = 100
     val_frac: float = 0.2
     eval_every: int = 2
@@ -132,6 +161,8 @@ class KernelBridges:
         perm = rng.permutation(n)
         n_val = max(int(cfg.val_frac * n), 1)
         val_idx, tr_idx = perm[:n_val], perm[n_val:]
+        if len(tr_idx) < 8:
+            raise ValueError("kernel bridge training requires at least eight training observations")
 
         dev = self.device
         tens = lambda a: torch.tensor(a, dtype=torch.float32, device=dev)
@@ -145,13 +176,15 @@ class KernelBridges:
 
         best_score = np.inf
         best_state = (ema_h.state_dict(), ema_q.state_dict())
+        min_training_objective = np.inf
+        training_objective_trace = []
         bad = 0
         bs = min(cfg.batch_size, len(tr_idx))
 
         for epoch in range(cfg.max_epochs):
             self.net_h.train(); self.net_q.train()
             ep = rng.permutation(len(tr_idx))
-            for start in range(0, len(tr_idx) - 1, bs):
+            for start in range(0, len(tr_idx), bs):
                 bidx = tr_idx[ep[start:start + bs]]
                 if len(bidx) < 8:
                     continue
@@ -165,11 +198,14 @@ class KernelBridges:
                     mask = (Tb == k).float()
                     hk = self.net_h(fh[bt], arm)
                     R = mask * (Yb - hk)
-                    loss = loss + ustat_quadratic(R, Kh)
+                    loss = loss + vstat_quadratic(R, Kh)
                     gk = self.net_q(fq[bt], arm)
-                    qk = torch.clamp(1.0 + F.softplus(gk), max=cfg.q_max)
+                    qk = positive_q_link(gk, q_min=cfg.q_min, q_max=cfg.q_max)
                     S = mask * qk - 1.0
-                    loss = loss + ustat_quadratic(S, Kq)
+                    loss = loss + vstat_quadratic(S, Kq)
+                objective = float(loss.detach().cpu())
+                training_objective_trace.append(objective)
+                min_training_objective = min(min_training_objective, objective)
                 opt.zero_grad(); loss.backward(); opt.step()
                 ema_h.update(self.net_h); ema_q.update(self.net_q)
 
@@ -191,6 +227,13 @@ class KernelBridges:
         self.net_q.load_state_dict(best_state[1])
         self.net_h.eval(); self.net_q.eval()
         self.best_resid = float(best_score)
+        self.min_training_objective = float(min_training_objective)
+        self.final_training_objective = float(training_objective_trace[-1])
+        self.training_objective_trace = tuple(training_objective_trace)
+        if not np.isfinite(self.min_training_objective):
+            raise RuntimeError("kernel training produced no finite objective")
+        if self.min_training_objective < -1e-10:
+            raise RuntimeError("nonnegative kernel training objective invariant failed")
         self._fitted = True
         return self
 
@@ -209,7 +252,7 @@ class KernelBridges:
             sdR = R.std() + 1e-6
             m_h = (R[:, None] * gz_h).mean(0).abs().max() / sdR
             gk = nq(fq[vidx], arm)
-            qk = torch.clamp(1.0 + F.softplus(gk), max=self.cfg.q_max)
+            qk = positive_q_link(gk, q_min=self.cfg.q_min, q_max=self.cfg.q_max)
             S = mask * qk - 1.0
             sdS = S.std() + 1e-6
             m_q = (S[:, None] * gz_q).mean(0).abs().max() / sdS
@@ -239,6 +282,6 @@ class KernelBridges:
         for k in range(self.K):
             arm = torch.full((X.shape[0],), k, dtype=torch.long, device=self.device)
             gk = self.net_q(ft, arm)
-            qk = torch.clamp(1.0 + F.softplus(gk), max=self.cfg.q_max)
+            qk = positive_q_link(gk, q_min=self.cfg.q_min, q_max=self.cfg.q_max)
             out[:, k] = qk.cpu().numpy()
         return out

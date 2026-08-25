@@ -1,6 +1,7 @@
 """Reconstruct Round-2 task/candidate/selector tables from raw result.json files."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -10,7 +11,21 @@ import numpy as np
 import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, ROOT)
+
+from opm.provenance import (
+    paths_overlap,
+    registered_manifest_phase,
+    sha256_file,
+    validate_manifest_rows,
+    validate_result_checksum,
+    validate_result_provenance,
+)
+
 OUT = os.path.join(ROOT, "results", "mvopm_round2")
+FROZEN_FINAL_MANIFEST = os.path.join(OUT, "manifest_final.jsonl")
+FROZEN_FINAL_ROOT = os.path.join(OUT, "final")
+FROZEN_DEVELOPMENT_ROOT = os.path.join(OUT, "development")
 
 
 def _cell(value):
@@ -34,15 +49,42 @@ def _numeric_list(value):
     return out
 
 
-def aggregate(manifest: str) -> dict:
-    manifest_rows = [json.loads(line) for line in open(manifest)]
+def aggregate(manifest: str, *, output_root: str | None = None) -> dict:
+    manifest_hash = sha256_file(manifest)
+    registered_phase = registered_manifest_phase(manifest_hash)
+    if registered_phase and output_root is None:
+        raise RuntimeError(
+            "refusing to aggregate a registered frozen Round-2 manifest without a disjoint "
+            "output_root for an audit reconstruction"
+        )
+    with open(manifest, encoding="utf-8") as handle:
+        manifest_rows = [json.loads(line) for line in handle if line.strip()]
+    validate_manifest_rows(manifest_rows)
+    manifest_name = os.path.basename(manifest)
+    phase = registered_phase or ("final" if "final" in manifest_name else "development")
+    phase_dir = os.path.join(output_root or OUT, phase)
+    protected_roots = [FROZEN_FINAL_ROOT]
+    if registered_phase == "development":
+        protected_roots.append(FROZEN_DEVELOPMENT_ROOT)
+    if any(paths_overlap(phase_dir, protected) for protected in protected_roots):
+        raise RuntimeError(
+            f"refusing aggregate output {phase_dir}: target intersects a frozen Round-2 root"
+        )
     tasks, candidates, missing, failures = [], [], [], []
-    for expected in manifest_rows:
+    for array_task_id, expected in enumerate(manifest_rows):
         path = expected["out_path"]
         if not os.path.exists(path):
             missing.append(path)
             continue
-        prov = json.load(open(path))
+        with open(path, encoding="utf-8") as handle:
+            prov = json.load(handle)
+        validate_result_checksum(path, required=bool(expected.get("source_commit")))
+        validate_result_provenance(
+            prov,
+            expected,
+            array_task_id=array_task_id,
+            manifest_sha256=manifest_hash,
+        )
         if prov.get("status") != "ok":
             failures.append({
                 "study": expected["study"], "config_id": expected["config_id"],
@@ -111,9 +153,6 @@ def aggregate(manifest: str) -> dict:
                     ]))
             candidates.append(row)
 
-    manifest_name = os.path.basename(manifest)
-    phase = "final" if "final" in manifest_name else "development"
-    phase_dir = os.path.join(OUT, phase)
     os.makedirs(phase_dir, exist_ok=True)
     task_df, candidate_df = pd.DataFrame(tasks), pd.DataFrame(candidates)
     task_path = os.path.join(phase_dir, "raw.csv")
@@ -138,6 +177,8 @@ def aggregate(manifest: str) -> dict:
     audit = {
         "manifest_rows": len(manifest_rows), "ok_rows": len(tasks), "candidate_rows": len(candidates),
         "missing_rows": len(missing), "failed_rows": len(failures),
+        "manifest_sha256": manifest_hash,
+        "provenance_validation": "strict_config_index_seed_source_when_registered",
         "per_study_ok": dict(Counter(r["study"] for r in tasks)),
         "missing": missing, "failures": failures,
     }
@@ -147,8 +188,16 @@ def aggregate(manifest: str) -> dict:
 
 
 def main():
-    manifest = sys.argv[1] if len(sys.argv) > 1 else os.path.join(OUT, "manifest_development.jsonl")
-    audit = aggregate(manifest)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "manifest", nargs="?", default=os.path.join(OUT, "manifest_development.jsonl"),
+    )
+    parser.add_argument(
+        "--output-root",
+        help="disjoint reconstruction root; required for the frozen final manifest",
+    )
+    args = parser.parse_args()
+    audit = aggregate(args.manifest, output_root=args.output_root)
     print(json.dumps(audit, indent=2))
 
 

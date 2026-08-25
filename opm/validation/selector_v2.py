@@ -2,6 +2,9 @@
 
 This module is deliberately separate from the frozen Round-1 scalar selectors and contains no
 oracle imports. All uncertainty inputs must come from out-of-fold pseudo-outcomes.
+
+The screen consumes empirical compatibility p-values. It does not by itself establish
+candidate-class adequacy when bridge predictions are fitted nuisances.
 """
 from __future__ import annotations
 
@@ -19,10 +22,23 @@ class ScreeningResult:
     p_dr: np.ndarray
     threshold: float
     failed_arms: tuple[int, ...]
+    adjustment: str = "bonferroni"
+    arm_thresholds: tuple[float, ...] = ()
 
 
-def screen_candidate(p_h, p_q, *, alpha: float = 0.05, n_required_arms: int | None = None) -> ScreeningResult:
-    """Bonferroni screen using the proximal DR union-null p-value ``max(p_h,p_q)``."""
+def screen_candidate(
+    p_h,
+    p_q,
+    *,
+    alpha: float = 0.05,
+    n_required_arms: int | None = None,
+    adjustment: str = "bonferroni",
+) -> ScreeningResult:
+    """Compatibility screen using the DR union rule ``max(p_h,p_q)``.
+
+    Bonferroni is the frozen primary rule. Holm is exposed only for the preregistered
+    descriptive sensitivity analysis.
+    """
     ph = np.asarray(p_h, dtype=float).reshape(-1)
     pq = np.asarray(p_q, dtype=float).reshape(-1)
     if ph.shape != pq.shape or ph.size == 0:
@@ -30,10 +46,36 @@ def screen_candidate(p_h, p_q, *, alpha: float = 0.05, n_required_arms: int | No
     K = int(n_required_arms or ph.size)
     if K != ph.size:
         raise ValueError("n_required_arms must equal the number of tested arm p-values")
-    threshold = float(alpha / K)
     p_dr = np.maximum(ph, pq)
-    failed = tuple(int(k) for k in np.flatnonzero(~np.isfinite(p_dr) | (p_dr < threshold)))
-    return ScreeningResult(len(failed) == 0, p_dr, threshold, failed)
+    threshold = float(alpha / K)
+    if adjustment == "bonferroni":
+        arm_thresholds = np.full(K, threshold, dtype=float)
+        failed = tuple(int(k) for k in np.flatnonzero(
+            ~np.isfinite(p_dr) | (p_dr < arm_thresholds)
+        ))
+    elif adjustment == "holm":
+        invalid = set(int(k) for k in np.flatnonzero(~np.isfinite(p_dr)))
+        arm_thresholds = np.full(K, np.nan, dtype=float)
+        failed_set = set(invalid)
+        valid_order = [int(k) for k in np.argsort(np.where(np.isfinite(p_dr), p_dr, np.inf))
+                       if int(k) not in invalid]
+        for rank, arm in enumerate(valid_order):
+            arm_thresholds[arm] = alpha / (K - rank)
+            if p_dr[arm] < arm_thresholds[arm]:
+                failed_set.add(arm)
+            else:
+                break
+        failed = tuple(sorted(failed_set))
+    else:
+        raise ValueError("adjustment must be 'bonferroni' or 'holm'")
+    return ScreeningResult(
+        len(failed) == 0,
+        p_dr,
+        threshold,
+        failed,
+        adjustment,
+        tuple(float(x) for x in arm_thresholds),
+    )
 
 
 def pseudo_outcome_uncertainty(phi: np.ndarray, *, reference_arm: int = 0) -> dict:
@@ -63,23 +105,34 @@ def select_mses(
     uncertainties: Dict[str, dict],
     *,
     alpha: float = 0.05,
+    adjustment: str = "bonferroni",
+    variance_key: str = "variance_mean",
 ) -> dict:
-    """Screen on moment adequacy, then minimize mean OOF contrast variance."""
+    """Screen on compatibility, then minimize the requested OOF variance summary."""
     if set(tests) != set(uncertainties):
         raise ValueError("tests and uncertainties must contain identical candidates")
+    missing_variance = [name for name, row in uncertainties.items() if variance_key not in row]
+    if missing_variance:
+        raise ValueError(
+            f"uncertainty rows missing {variance_key!r}: {sorted(missing_variance)}"
+        )
     screening = {}
     for name in sorted(tests):
         t = tests[name]
-        screening[name] = screen_candidate(t["p_h"], t["p_q"], alpha=alpha)
+        screening[name] = screen_candidate(
+            t["p_h"], t["p_q"], alpha=alpha, adjustment=adjustment,
+        )
     survivors = [name for name in sorted(screening) if screening[name].passes]
     if not survivors:
         selected = ABSTAIN
     else:
-        selected = min(survivors, key=lambda n: (float(uncertainties[n]["variance_mean"]), n))
+        selected = min(survivors, key=lambda n: (float(uncertainties[n][variance_key]), n))
     return {
         "selected": selected,
         "survivors": survivors,
         "survivor_count": len(survivors),
         "screening": screening,
         "abstained": selected == ABSTAIN,
+        "adjustment": adjustment,
+        "variance_key": variance_key,
     }

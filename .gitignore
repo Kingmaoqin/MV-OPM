@@ -4,6 +4,8 @@ __pycache__/
 opm.egg-info/
 .conda_env/
 .ipynb_checkpoints/
+results/mvopm_round2/**/result.json.lock
+results/mvopm_round2/**/result.json.sha256
 
 # Round-2 immutable per-task corpus is retained locally (about 5.9 GB).  The compact manifest,
 # reconstructed CSVs, audits, tables, figures, and report remain version-controlled.

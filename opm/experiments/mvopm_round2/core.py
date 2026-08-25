@@ -9,7 +9,7 @@ from scipy.stats import kendalltau, spearmanr
 from ...data.views import observed
 from ...diagnostics.diagnostics import q_sanity
 from ...estimator.nested_mses import NestedMSESConfig, nested_mses
-from ...estimator.tau_head import fit_cate_and_ate
+from ...estimator.tau_head import ate_with_ci, crossfit_cate_predictions
 from ...eval import oracle
 from ...validation.oof import collect_candidate_oof
 from ...validation.selector import SCORE_NAMES, compute_scores, select
@@ -59,14 +59,36 @@ def evaluate_candidates_round2(ds, cfg: Round2Config) -> dict:
     has_truth = oracle.has_truth(ds)
     for nm in sorted(oof["phi"]):
         phi = oof["phi"][nm]
-        tau_head, _, ate = fit_cate_and_ate(ds.X, phi, cfg.K, cfg.device, cfg.seed, cfg.head_kwargs)
+        # ATEs are means of the already cross-fitted pseudo-outcomes.  Do not fit a
+        # full-sample Stage-2 CATE head merely to compute them: that is unnecessary and
+        # risks making the secondary PEHE diagnostic look sample-in.
+        ate = {
+            k: ate_with_ci(phi[:, k] - phi[:, 0])
+            for k in range(1, cfg.K)
+        }
         if has_truth:
+            cate_oof = crossfit_cate_predictions(
+                ds.X,
+                phi,
+                cfg.K,
+                n_folds=cfg.n_folds,
+                device=cfg.device,
+                seed=cfg.seed + 500000,
+                head_kwargs=cfg.head_kwargs,
+            )
             err = oracle.candidate_causal_error(
-                tau_head.predict(ds.X), [ate[k]["ate"] for k in range(1, cfg.K)], ds
+                cate_oof, [ate[k]["ate"] for k in range(1, cfg.K)], ds
             )
         else:
             err = {"pehe": float("nan"), "ate_err": float("nan")}
-        qd = q_sanity(oof["q"][nm], ds.T, cfg.K)
+        q_uses_kernel = nm.endswith("_kernel")
+        qd = q_sanity(
+            oof["q"][nm],
+            ds.T,
+            cfg.K,
+            q_lower=(float(cfg.bridge_kwargs.get("q_min", 1e-4)) if q_uses_kernel else 0.0),
+            q_upper=float(cfg.bridge_kwargs.get("q_max", 50.0)),
+        )
         tst = oof["tests"][nm]
         scr = screen_candidate(tst["p_h"], tst["p_q"], alpha=cfg.alpha)
         unc = oof["uncertainty"][nm]
@@ -94,6 +116,20 @@ def evaluate_candidates_round2(ds, cfg: Round2Config) -> dict:
             "ess": float(np.mean([qd[k]["ess"] for k in range(cfg.K)])),
             "ess_by_arm": [qd[k]["ess"] for k in range(cfg.K)],
             "max_q": float(max(qd[k]["max_q"] for k in range(cfg.K))),
+            "min_q": float(min(qd[k]["min_q"] for k in range(cfg.K))),
+            "q_lower_clip_fraction": float(np.mean([
+                qd[k]["fraction_at_lower_bound"] for k in range(cfg.K)
+            ])),
+            "q_upper_clip_fraction": float(np.mean([
+                qd[k]["fraction_at_upper_bound"] for k in range(cfg.K)
+            ])),
+            "q_numerically_pathological": bool(
+                max(qd[k]["fraction_at_upper_bound"] for k in range(cfg.K)) > 0.01
+                or max(qd[k]["fraction_at_lower_bound"] for k in range(cfg.K)) > 0.01
+                or np.mean([abs(qd[k]["En_1Tk_qk"] - 1.0) for k in range(cfg.K)]) > 0.1
+            ),
+            "moment_test_calibration_scope": tst["calibration_scope"],
+            "pehe_evaluation_scope": "head_only_cross_fitted_with_reused_stage1_oof",
         }
     return {"rows": rows, "oof": oof}
 
@@ -185,6 +221,7 @@ def selector_metrics(rows: dict, cfg: Round2Config, *, nested_result: dict | Non
         survivor_counts = [f["survivor_count"] for f in nested_result["folds"]]
         oracle_survival = [oracle_best in f["survivors"] for f in nested_result["folds"]]
         top1 = [chosen == oracle_best for chosen in selected_by_fold]
+        fold_abstained = [chosen == ABSTAIN for chosen in selected_by_fold]
         top2 = []
         for fold in nested_result["folds"]:
             order = sorted(fold["survivors"], key=lambda n: (fold["uncertainty"][n]["variance_mean"], n))
@@ -197,15 +234,20 @@ def selector_metrics(rows: dict, cfg: Round2Config, *, nested_result: dict | Non
             "oracle_survival_rate[MSES]": float(np.mean(oracle_survival)),
             "top1[MSES]": float(np.mean(top1)),
             "top2[MSES]": float(np.mean(top2)),
+            "fold_abstention_rate[MSES]": float(np.mean(fold_abstained)),
+            "any_fold_abstained[MSES]": bool(any(fold_abstained)),
         })
         if not nested_result["abstained"]:
             if ds is None:
                 raise ValueError("ds is required to evaluate a nested simulation result")
             nested_ate_error = oracle.ate_error(nested_result["ate_vector"], ds)
-            nested_pehe = oracle.pehe(nested_result["predict_cate"](ds.X), ds)
+            nested_pehe = oracle.pehe(nested_result["cate_oof"], ds)
             out.update({
                 "error[MSES]": nested_ate_error,
                 "pehe[MSES]": nested_pehe,
+                "pehe_evaluation_scope[MSES]": (
+                    "head_only_cross_fitted_with_reused_stage1_outer_oof"
+                ),
                 "regret[MSES]": nested_ate_error - best_err,
                 "oracle_ratio[MSES]": nested_ate_error / (best_err + 1e-12),
                 "catastrophic[MSES]": int(nested_ate_error > 1.5 * best_err),
@@ -219,6 +261,18 @@ def selector_metrics(rows: dict, cfg: Round2Config, *, nested_result: dict | Non
             if sname == "MSES":
                 continue
             choices = [f["selected_by_selector"][sname] for f in nested_result["folds"]]
+            if ate_vector is None:
+                out.update({
+                    f"status[{sname}]": ABSTAIN,
+                    f"selected[{sname}]": choices,
+                    f"error[{sname}]": float("nan"),
+                    f"regret[{sname}]": float("nan"),
+                    f"oracle_ratio[{sname}]": float("nan"),
+                    f"catastrophic[{sname}]": float("nan"),
+                    f"top1[{sname}]": float(np.mean([c == oracle_best for c in choices])),
+                    f"top2[{sname}]": float("nan"),
+                })
+                continue
             selected_err = oracle.ate_error(ate_vector, ds)
             out.update({
                 f"status[{sname}]": "ok",
@@ -248,6 +302,24 @@ def selector_metrics(rows: dict, cfg: Round2Config, *, nested_result: dict | Non
                     fold_top2.append(oracle_best in order[:2])
                 elif sname in ("fixed_kernel", "fixed_sieve1"):
                     fold_top2.append(fold["selected_by_selector"][sname] == oracle_best)
+                elif sname in ("MSES_holm_sensitivity", "MSES_max_variance_sensitivity"):
+                    adjustment = "holm" if sname == "MSES_holm_sensitivity" else "bonferroni"
+                    variance_key = (
+                        "variance_max" if sname == "MSES_max_variance_sensitivity"
+                        else "variance_mean"
+                    )
+                    decision = select_mses(
+                        fold["tests"],
+                        fold["uncertainty"],
+                        alpha=cfg.alpha,
+                        adjustment=adjustment,
+                        variance_key=variance_key,
+                    )
+                    order = sorted(
+                        decision["survivors"],
+                        key=lambda n: (fold["uncertainty"][n][variance_key], n),
+                    )
+                    fold_top2.append(oracle_best in order[:2])
             out[f"top2[{sname}]"] = float(np.mean(fold_top2)) if fold_top2 else float("nan")
     for nm in names:
         rows[nm].update({
@@ -294,5 +366,7 @@ def run_round2_selection(ds, cfg: Round2Config) -> dict:
             "ate_vector": nested_result.get("ate_vector"),
             "ate_by_selector": nested_result.get("ate_by_selector"),
             "ate_vector_by_selector": nested_result.get("ate_vector_by_selector"),
+            "cate_oof": nested_result.get("cate_oof"),
+            "abstained_by_selector": nested_result.get("abstained_by_selector"),
         }
     return {"candidates": evaluated["rows"], "selectors": metrics, "_nested": nested_raw}

@@ -49,6 +49,11 @@ def audit_one(scenario: str, seed: int, *, n: int = 1500, device: str = "cpu") -
             h_stability = float(np.sqrt(np.mean((h - ph) ** 2)) / (np.std(ph) + 1e-8))
             q_stability = float(np.sqrt(np.mean((q - pq) ** 2)) / (np.std(pq) + 1e-8))
         solver = cs._solvers["kernel"]
+        parameter_l2 = float(np.sqrt(sum(
+            float(np.sum(p.detach().cpu().numpy() ** 2))
+            for model in (solver.net_h, solver.net_q)
+            for p in model.parameters()
+        )))
         out.append({
             "scenario": scenario,
             "seed": seed,
@@ -58,6 +63,18 @@ def audit_one(scenario: str, seed: int, *, n: int = 1500, device: str = "cpu") -
             "h_prediction_change": h_stability,
             "q_prediction_change": q_stability,
             "optimizer_best_resid": float(solver.best_resid),
+            "optimizer_min_training_objective": float(solver.min_training_objective),
+            "optimizer_final_training_objective": float(solver.final_training_objective),
+            "optimizer_updates": len(solver.training_objective_trace),
+            "training_objective_scope": "minibatch_vstat_with_diagonal_regularization",
+            "training_batch_size_cap": int(solver.cfg.batch_size),
+            "parameter_l2": parameter_l2,
+            "h_prediction_min": float(np.min(h)),
+            "h_prediction_max": float(np.max(h)),
+            "h_prediction_rms": float(np.sqrt(np.mean(h ** 2))),
+            "q_prediction_min": float(np.min(q)),
+            "q_prediction_max": float(np.max(q)),
+            "q_prediction_rms": float(np.sqrt(np.mean(q ** 2))),
         })
         previous = h, q
     return out

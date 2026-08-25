@@ -20,6 +20,29 @@ E_TANH2 = 0.3942944903978411
 ATE_TRUE = fpe.ATE
 
 
+def _nested_rhc_ate_payload(nested: dict, K: int = 2) -> dict:
+    """Expose nested adaptive estimates without upgrading naive Wald coverage claims."""
+    summaries = (nested.get("ate_by_selector") or {}).get("MSES")
+    if nested.get("status") != "ok" or not summaries:
+        return {
+            "ate": None,
+            "ate_lo": None,
+            "ate_hi": None,
+            "ate_se": None,
+            "ate_source": "nested_outer_oof_adaptive_mses",
+            "ate_interval_scope": nested.get("ate_interval_scope"),
+        }
+    ordered = [summaries[k] for k in range(1, K)]
+    return {
+        "ate": [row["ate"] for row in ordered],
+        "ate_lo": [row["ci_low"] for row in ordered],
+        "ate_hi": [row["ci_high"] for row in ordered],
+        "ate_se": [row["se"] for row in ordered],
+        "ate_source": "nested_outer_oof_adaptive_mses",
+        "ate_interval_scope": nested.get("ate_interval_scope"),
+    }
+
+
 def aligned_mechanism_row(
     seed: int,
     r_h: float,
@@ -119,6 +142,7 @@ def selection_study_row(
     proxy_mod: dict | None = None,
     regime: dict | None = None,
     evaluate_ignorability: bool = False,
+    library_scenario_label: str | None = None,
     library_truth: str | None = None,
 ) -> dict:
     """One confirmatory simulation task, retaining a complete candidate-level table."""
@@ -138,11 +162,20 @@ def selection_study_row(
         "proxy_mod_kind": (proxy_mod or {}).get("kind"),
         "proxy_mod_level": (proxy_mod or {}).get("level"),
         "regime": regime,
-        "library_truth": library_truth,
+        "library_scenario_label": library_scenario_label or library_truth,
+        "legacy_library_truth_label": library_truth,
         "selectors": result["selectors"],
         "_candidates": result["candidates"],
         "_nested": result.get("_nested"),
+        "arm_counts": np.bincount(ds.T, minlength=ds.K).astype(int).tolist(),
     }
+    true_propensity = (ds.meta or {}).get("true_propensity")
+    if true_propensity is not None:
+        min_probability = np.min(np.asarray(true_propensity, dtype=float), axis=1)
+        out.update({
+            "true_overlap_min_probability_mean": float(np.mean(min_probability)),
+            "true_overlap_min_probability_q05": float(np.quantile(min_probability, 0.05)),
+        })
     if evaluate_ignorability:
         ign = OPM(OPMConfig(
             K=ds.K,
@@ -164,7 +197,7 @@ def rhc_stability_row(seed: int, cfg: Round2Config) -> dict:
     from ...data.rhc import load_rhc
     from ...estimator.nested_mses import NestedMSESConfig, nested_mses
 
-    ds = load_rhc()
+    ds = load_rhc(require_verified_proxy_mapping=True)
     cfg.K = 2
     cfg.candidate_names = ["kernel_kernel", "kernel_sieve1", "sieve1_kernel", "sieve1_sieve1"]
     evaluated = evaluate_candidates_round2(ds, cfg)
@@ -187,9 +220,15 @@ def rhc_stability_row(seed: int, cfg: Round2Config) -> dict:
         candidate_names=cfg.candidate_names,
         bridge_kwargs=cfg.bridge_kwargs,
         head_kwargs=cfg.head_kwargs,
+        compute_cate_oof=False,
     ))
     selected = decision["selected"]
     selected_metrics = None if selected.startswith("ABSTAIN") else rows[selected]
+    nested_ate = _nested_rhc_ate_payload(nested, K=2)
+    fold_choices = nested.get("selected") or []
+    fold_abstention_rate = float(np.mean([
+        str(choice).startswith("ABSTAIN") for choice in fold_choices
+    ])) if fold_choices else float("nan")
     return {
         "study": "J2",
         "scenario": "rhc",
@@ -199,12 +238,16 @@ def rhc_stability_row(seed: int, cfg: Round2Config) -> dict:
         "survivors": decision["survivors"],
         "survivor_count": decision["survivor_count"],
         "nested_status": nested["status"],
-        "nested_selected_by_fold": nested["selected"],
-        "ate": None if selected_metrics is None else selected_metrics["ate"],
-        "ate_lo": None if selected_metrics is None else selected_metrics["ate_lo"],
-        "ate_hi": None if selected_metrics is None else selected_metrics["ate_hi"],
-        "ess": None if selected_metrics is None else selected_metrics["ess"],
-        "max_q": None if selected_metrics is None else selected_metrics["max_q"],
-        "q_balance": None if selected_metrics is None else selected_metrics["q_balance"],
+        "nested_selected_by_fold": fold_choices,
+        "nested_fold_abstention_rate": fold_abstention_rate,
+        **nested_ate,
+        "deployment_ate": None if selected_metrics is None else selected_metrics["ate"],
+        "deployment_ate_lo_naive": None if selected_metrics is None else selected_metrics["ate_lo"],
+        "deployment_ate_hi_naive": None if selected_metrics is None else selected_metrics["ate_hi"],
+        "deployment_interval_scope": "naive_candidate_oof_after_adaptive_selection",
+        "deployment_abstained": decision["abstained"],
+        "deployment_ess": None if selected_metrics is None else selected_metrics["ess"],
+        "deployment_max_q": None if selected_metrics is None else selected_metrics["max_q"],
+        "deployment_q_balance": None if selected_metrics is None else selected_metrics["q_balance"],
         "_candidates": rows,
     }
