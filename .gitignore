@@ -20,3 +20,22 @@ results/mvopm_round2/final/H2/
 results/mvopm_round2/final/I2/
 results/mvopm_round2/final/J2/
 results/mvopm_round2/final/R/
+
+# Repaired confirmatory v1 keeps compact manifests/audits under version control while raw task
+# records, locks, checksums, convergence shards, and queue logs remain local evidence artifacts.
+results/mvopm_repaired_v1/final/A2/
+results/mvopm_repaired_v1/final/B2/
+results/mvopm_repaired_v1/final/C2/
+results/mvopm_repaired_v1/final/D2/
+results/mvopm_repaired_v1/final/E2/
+results/mvopm_repaired_v1/final/F2/
+results/mvopm_repaired_v1/final/G2/
+results/mvopm_repaired_v1/final/H2/
+results/mvopm_repaired_v1/final/I2/
+results/mvopm_repaired_v1/final/R/
+results/mvopm_repaired_v1/**/result.json.lock
+results/mvopm_repaired_v1/**/result.json.sha256
+results/mvopm_repaired_v1/development/convergence_audit/*/seed*.json
+results/mvopm_repaired_v1/development/convergence_audit/*/seed*.json.sha256
+results/mvopm_repaired_v1/queue/*.log
+results/mvopm_repaired_v1/queue/*.lock
