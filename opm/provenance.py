@@ -297,6 +297,8 @@ def validate_result_provenance(
     *,
     array_task_id: int,
     manifest_sha256: str,
+    authorization_commit: str | None = None,
+    release_authorization_sha256: str | None = None,
 ) -> None:
     """Raise if a raw record is stale, swapped, mis-seeded, or from the wrong source."""
     mismatches: list[str] = []
@@ -309,7 +311,46 @@ def validate_result_provenance(
 
     source_commit = expected.get("source_commit")
     if source_commit:
-        _compare(mismatches, "source_commit", prov.get("git_commit_full"), source_commit)
+        release_path = expected.get("release_authorization_path")
+        if release_path:
+            _compare(
+                mismatches,
+                "scientific_source_commit",
+                prov.get("scientific_source_commit"),
+                source_commit,
+            )
+            if not isinstance(authorization_commit, str) or not re.fullmatch(
+                r"[0-9a-f]{40}", authorization_commit,
+            ):
+                mismatches.append("expected authorization_commit is missing or invalid")
+            else:
+                _compare(
+                    mismatches,
+                    "recorded authorization_commit",
+                    prov.get("authorization_commit"),
+                    authorization_commit,
+                )
+                _compare(
+                    mismatches,
+                    "execution authorization commit",
+                    prov.get("git_commit_full"),
+                    authorization_commit,
+                )
+            if not isinstance(release_authorization_sha256, str) or not re.fullmatch(
+                r"[0-9a-f]{64}", release_authorization_sha256,
+            ):
+                mismatches.append("expected release authorization hash is missing or invalid")
+            else:
+                _compare(
+                    mismatches,
+                    "release_authorization_sha256",
+                    prov.get("release_authorization_sha256"),
+                    release_authorization_sha256,
+                )
+            if prov.get("git_worktree_dirty") is not False:
+                mismatches.append("released worker worktree was not fully clean")
+        else:
+            _compare(mismatches, "source_commit", prov.get("git_commit_full"), source_commit)
         _compare(mismatches, "manifest_sha256", prov.get("manifest_sha256"), manifest_sha256)
         if expected.get("require_clean_source", True) and prov.get("git_dirty") is not False:
             mismatches.append("worker source was dirty but manifest requires a clean source")
@@ -331,9 +372,13 @@ def validate_result_provenance(
         if not isinstance(result, dict):
             mismatches.append("successful record has no result object")
         else:
-            if "study" in result:
+            if "study" not in result:
+                mismatches.append("successful result is missing study")
+            else:
                 _compare(mismatches, "result.study", result.get("study"), expected.get("study"))
-            if "seed" in result:
+            if "seed" not in result:
+                mismatches.append("successful result is missing seed")
+            else:
                 _compare(
                     mismatches,
                     "result.seed",

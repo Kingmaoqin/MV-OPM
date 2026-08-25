@@ -22,6 +22,19 @@ DECISION_PATH = os.path.join(
     "CONVERGENCE_DECISION.json",
 )
 LOW, HIGH = 1_000_000_000, 2_000_000_000
+CONVERGENCE_DIR = os.path.dirname(DECISION_PATH)
+OBSERVED_PATH = os.path.join(CONVERGENCE_DIR, "observed_convergence.csv")
+SUMMARY_PATH = os.path.join(CONVERGENCE_DIR, "summary.csv")
+EXPECTED_DECISION_SHA256 = "b1c044e93893a0d79fa13cc7e79d1f3318be76206b00c2d4a1b3d09ab742abc9"
+EXPECTED_DEVELOPMENT_SEED_SHA256 = "30dc5779c30f3912118bb01f42a93067186bd47a1f662066db941937b81795b3"
+EXPECTED_HAMD_PATH = "/home/xqin5/DpressionTreatmenteffect/data-merged-def-1.csv"
+EXPECTED_HAMD_SHA256 = "b40d7c17e687170c2c17c3eb892fd90a73a51e3b1e96864430ffdc2ce7264609"
+EXPECTED_SOURCE_COMMIT = "13e6ab0b17480e86c739dae407681f17fe1c4082"
+EXPECTED_BUDGETS = [45, 90, 180, 300]
+EXPECTED_RULE = "first_adjacent_median_rff_improvement_lt_0.05_and_hq_changes_lt_0.05_else_300"
+EXPECTED_OBSERVED_SHA256 = "05bf43c4dc809e3d64e61652f785c6f9db1b9cb4fa31320724316dc629af7c3f"
+EXPECTED_SUMMARY_SHA256 = "2f9b0412cefe51811f9bdff98513a36df91d0dec2419f8a04cdc544257e2b644"
+
 FINAL_COUNTS = {
     "A2": 200, "B2": 50, "C2": 50, "D2": 50, "E2": 50,
     "R": 30, "F2": 30, "G2": 30, "H2": 30, "I2": 50,
@@ -70,7 +83,7 @@ def _require_final_seed_gate() -> dict:
     )
     if status.strip():
         raise RuntimeError("final seed generation requires a clean committed worktree")
-    for path in (PREREG_PATH, DECISION_PATH):
+    for path in (PREREG_PATH, DECISION_PATH, OBSERVED_PATH, SUMMARY_PATH, DEVELOPMENT_PATH):
         if not os.path.exists(path):
             raise RuntimeError(f"required final-seed gate file is missing: {path}")
         current = open(path, "rb").read()
@@ -80,23 +93,47 @@ def _require_final_seed_gate() -> dict:
     if "**Final seed generation:** authorized" not in prereg:
         raise RuntimeError("committed preregistration has not authorized final seed generation")
     decision = json.load(open(DECISION_PATH, encoding="utf-8"))
+    for marker in (
+        EXPECTED_DECISION_SHA256,
+        EXPECTED_OBSERVED_SHA256,
+        EXPECTED_SUMMARY_SHA256,
+        "rule selected the 300-epoch cap",
+    ):
+        if marker not in prereg:
+            raise RuntimeError(f"committed preregistration is missing frozen marker: {marker}")
+    if hashlib.sha256(open(DEVELOPMENT_PATH, "rb").read()).hexdigest() != EXPECTED_DEVELOPMENT_SEED_SHA256:
+        raise RuntimeError("development seed registry bytes differ from the frozen SHA-256")
+
+    source_state = decision.get("source_state")
+    empty_sha = hashlib.sha256(b"").hexdigest()
     if (
         decision.get("program_id") != PROGRAM_ID
         or decision.get("status") != "observed_data_only_development_decision"
         or decision.get("n_tasks") != 32
         or decision.get("n_budget_rows") != 128
         or decision.get("oracle_metrics_loaded") is not False
-        or decision.get("selected_budget") not in {45, 90, 180, 300}
-        or decision.get("hamd_input_sha256")
-        != "b40d7c17e687170c2c17c3eb892fd90a73a51e3b1e96864430ffdc2ce7264609"
+        or decision.get("selected_budget") != 300
+        or decision.get("budgets") != EXPECTED_BUDGETS
+        or decision.get("rule") != EXPECTED_RULE
+        or decision.get("device") != "cuda:0"
+        or decision.get("seed_registry_sha256") != EXPECTED_DEVELOPMENT_SEED_SHA256
+        or decision.get("hamd_input_path") != EXPECTED_HAMD_PATH
+        or decision.get("hamd_input_sha256") != EXPECTED_HAMD_SHA256
+        or not isinstance(source_state, dict)
+        or source_state.get("commit") != EXPECTED_SOURCE_COMMIT
+        or source_state.get("dirty") is not False
+        or source_state.get("status_sha256") != empty_sha
+        or source_state.get("worktree_content_sha256") != empty_sha
     ):
         raise RuntimeError("committed convergence decision is incomplete or invalid")
-    for field, filename in (
-        ("observed_convergence_sha256", "observed_convergence.csv"),
-        ("summary_sha256", "summary.csv"),
+    if hashlib.sha256(open(DECISION_PATH, "rb").read()).hexdigest() != EXPECTED_DECISION_SHA256:
+        raise RuntimeError("committed convergence decision bytes do not match the amendment")
+    for field, path, expected in (
+        ("observed_convergence_sha256", OBSERVED_PATH, EXPECTED_OBSERVED_SHA256),
+        ("summary_sha256", SUMMARY_PATH, EXPECTED_SUMMARY_SHA256),
     ):
-        actual = hashlib.sha256(open(os.path.join(os.path.dirname(DECISION_PATH), filename), "rb").read()).hexdigest()
-        if decision.get(field) != actual:
+        actual = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        if decision.get(field) != actual or actual != expected:
             raise RuntimeError(f"convergence decision hash mismatch: {field}")
     return decision
 

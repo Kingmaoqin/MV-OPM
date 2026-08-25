@@ -7,6 +7,7 @@ Thread caps must be set by the launcher via env (OMP_NUM_THREADS etc.) BEFORE im
 from __future__ import annotations
 
 import json
+import hashlib
 import fcntl
 import os
 import shutil
@@ -27,8 +28,34 @@ from opm.provenance import (
     validate_execution_manifest,
     validate_manifest_output_namespace,
 )
+from opm.release_gate import (
+    HAMD_PATH,
+    HAMD_SHA256,
+    targets_repaired_v1_final,
+    validate_repaired_v1_release,
+)
 
 FROZEN_FINAL_ROOT = os.path.join(ROOT, "results", "mvopm_round2", "final")
+
+FROZEN_ROUND2_ROOT = os.path.join(ROOT, "results", "mvopm_round2")
+REPAIRED_FINAL_ROOT = os.path.join(ROOT, "results", "mvopm_repaired_v1", "final")
+
+
+def _validate_hamd_input(stage: str) -> None:
+    if not os.path.exists(HAMD_PATH) or sha256_file(HAMD_PATH) != HAMD_SHA256:
+        raise RuntimeError(f"HAMD input hash mismatch {stage} E2 execution")
+
+
+def _run_row_with_hamd_guard(row: dict) -> dict:
+    if row.get("study") != "E2":
+        return run_row(row)
+    _validate_hamd_input("before")
+    try:
+        return run_row(row)
+    finally:
+        # This executes even if the scientific code raises. A mutation/deletion replaces the
+        # original exception with an explicit provenance failure.
+        _validate_hamd_input("after")
 
 
 def _json_default(o):
@@ -147,23 +174,44 @@ def run_row(row: dict) -> dict:
 
 
 def main():
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: worker.py <manifest.jsonl> <row_index>")
     manifest, idx = sys.argv[1], int(sys.argv[2])
-    manifest_hash = sha256_file(manifest)
+    with open(manifest, "rb") as handle:
+        manifest_bytes = handle.read()
+    manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
     frozen_commit = registered_manifest_commit(manifest_hash)
     if frozen_commit:
         raise RuntimeError(
             f"refusing all execution through registered frozen manifest {manifest_hash} "
             f"at historical checkpoint {frozen_commit}; use a new program and namespace"
         )
-    rows = [json.loads(l) for l in open(manifest)]
+    rows = [
+        json.loads(line)
+        for line in manifest_bytes.decode("utf-8").splitlines()
+        if line.strip()
+    ]
     validate_execution_manifest(rows)
-    validate_manifest_output_namespace(rows, protected_roots=[FROZEN_FINAL_ROOT])
+    repaired_release = None
+    if targets_repaired_v1_final(rows, root=ROOT):
+        repaired_release = validate_repaired_v1_release(
+            rows,
+            manifest_path=manifest,
+            manifest_sha256=manifest_hash,
+            root=ROOT,
+        )
+    else:
+        validate_manifest_output_namespace(
+            rows,
+            protected_roots=[FROZEN_ROUND2_ROOT, REPAIRED_FINAL_ROOT],
+        )
+    if idx < 0 or idx >= len(rows):
+        raise IndexError(f"manifest row index {idx} is outside [0, {len(rows)})")
     row = rows[idx]
     out_path = row["out_path"]
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    # The manifest is generated after the scientific source commit and can therefore be the
-    # sole tracked worktree change.  Its exact bytes are independently pinned by SHA-256.
-    source = git_state(ROOT, allowed_dirty_paths=[manifest])
+    allowed_dirty_paths = [] if repaired_release is not None else [manifest]
+    source = git_state(ROOT, allowed_dirty_paths=allowed_dirty_paths)
     lock_handle = _acquire_result_lock(out_path)
     t0 = time.time()
     scientific_seed = row.get("scientific_seed", row.get("seed"))
@@ -185,16 +233,38 @@ def main():
             "numexpr_threads": os.environ.get("NUMEXPR_NUM_THREADS", "?"),
             "start_time_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t0)),
             "config": row, "warnings": []}
+    if repaired_release is not None:
+        prov.update({
+            "scientific_source_commit": repaired_release["scientific_source_commit"],
+            "authorization_commit": repaired_release["authorization_commit"],
+            "release_authorization_sha256": sha256_file(
+                os.path.join(ROOT, row["release_authorization_path"])
+            ),
+        })
     try:
         expected_commit = row.get("source_commit")
-        if expected_commit and source["commit"] != expected_commit:
+        execution_commit = (
+            repaired_release["authorization_commit"]
+            if repaired_release is not None
+            else expected_commit
+        )
+        if execution_commit and source["commit"] != execution_commit:
             raise RuntimeError(
-                f"source commit {source['commit']} does not match manifest {expected_commit}"
+                f"source commit {source['commit']} does not match authorized execution "
+                f"commit {execution_commit}"
             )
+        if repaired_release is not None and expected_commit != repaired_release["scientific_source_commit"]:
+            raise RuntimeError("manifest scientific source differs from the authorized source commit")
         if row.get("require_clean_source", False) and source["dirty"]:
             raise RuntimeError("manifest requires a clean source, but worker worktree is dirty")
-        result = run_row(row)
-        end_source = git_state(ROOT, allowed_dirty_paths=[manifest])
+        if row.get("study") == "E2":
+            if (
+                row.get("hamd_input_path") != HAMD_PATH
+                or row.get("hamd_input_sha256") != HAMD_SHA256
+            ):
+                raise RuntimeError("HAMD input declaration differs from the release contract")
+        result = _run_row_with_hamd_guard(row)
+        end_source = git_state(ROOT, allowed_dirty_paths=allowed_dirty_paths)
         if any(end_source[key] != source[key] for key in (
             "commit", "dirty", "status_sha256", "worktree_content_sha256",
         )):
@@ -211,6 +281,7 @@ def main():
         )
         provenance_markers = (
             "source commit", "source changed", "manifest requires", "registered checkpoint",
+            "authorized source", "release contract", "hamd input", "output namespace",
         )
         if any(marker in msg.lower() for marker in provenance_markers):
             failure_kind = "provenance"

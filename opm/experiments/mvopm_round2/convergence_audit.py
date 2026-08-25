@@ -15,8 +15,20 @@ from ..mvopm.scenarios import generate
 BUDGETS = (45, 90, 180, 300)
 
 
-def audit_one(scenario: str, seed: int, *, n: int = 1500, device: str = "cpu") -> list[dict]:
+def audit_one(
+    scenario: str,
+    seed: int,
+    *,
+    n: int = 1500,
+    device: str = "cpu",
+    budgets: tuple[int, ...] = BUDGETS,
+    batch_size: int = 1024,
+) -> list[dict]:
     """Evaluate held-out moments/objective/prediction stability across fixed epoch caps."""
+    if not budgets or any(int(budget) < 1 for budget in budgets):
+        raise ValueError("budgets must be nonempty positive integers")
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     ds = generate(scenario, n, seed, c_U=1.0)
     view = observed(ds)
     valid = make_folds(view.n, 5, seed)[0]
@@ -26,7 +38,7 @@ def audit_one(scenario: str, seed: int, *, n: int = 1500, device: str = "cpu") -
     inst_q = np.concatenate([vv.W, vv.X], axis=1)
     bank = build_bank(inst_h, inst_q, n_rff=200, seed=880000000 + seed)
     out, previous = [], None
-    for budget in BUDGETS:
+    for budget in budgets:
         cs = CandidateSet(
             view.K,
             seed=seed,
@@ -36,7 +48,7 @@ def audit_one(scenario: str, seed: int, *, n: int = 1500, device: str = "cpu") -
                 "max_epochs": budget,
                 "patience": max(15, int(round(0.15 * budget))),
                 "eval_every": 3,
-                "batch_size": 1024,
+                "batch_size": int(batch_size),
             },
         ).fit(tv)
         cand = cs.get("kernel_kernel")

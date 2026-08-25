@@ -14,6 +14,7 @@ from opm.provenance import sha256_file
 from scripts import generate_mvopm_repaired_v1_seeds as seed_generator
 from scripts import run_mvopm_repaired_v1_convergence as convergence
 
+from scripts import run_mvopm_repaired_v1_batch_sensitivity as batch_sensitivity
 
 def _valid_rows(scenario="S1", seed=123):
     rows = []
@@ -112,10 +113,105 @@ def test_shard_checksum_is_required_and_detects_change(tmp_path):
         convergence._validate_checksum(str(path))
 
 
-def test_final_seed_generation_is_blocked_before_committed_decision():
-    assert not os.path.exists(seed_generator.FINAL_PATH)
-    with pytest.raises(RuntimeError, match="clean committed worktree|gate file is missing"):
-        seed_generator._require_final_seed_gate()
+def test_final_seed_registry_is_disjoint_and_complete():
+    assert os.path.exists(seed_generator.FINAL_PATH)
+    final = json.load(open(seed_generator.FINAL_PATH, encoding="utf-8"))
+    development = json.load(open(seed_generator.DEVELOPMENT_PATH, encoding="utf-8"))
+    old = json.load(open(seed_generator.OLD_REGISTRY, encoding="utf-8"))
+    assert sha256_file(seed_generator.DEVELOPMENT_PATH) == (
+        seed_generator.EXPECTED_DEVELOPMENT_SEED_SHA256
+    )
+    assert final["program_id"] == seed_generator.PROGRAM_ID
+    assert final["phase"] == "confirmatory_final_unexposed_before_freeze"
+    assert final["selected_kernel_budget"] == 300
+    assert {
+        study: len(values) for study, values in final["scientific_seeds"].items()
+    } == seed_generator.FINAL_COUNTS
+    final_values = list(seed_generator._flatten(final["scientific_seeds"]))
+    assert len(final_values) == len(set(final_values)) == sum(seed_generator.FINAL_COUNTS.values())
+    assert all(seed_generator.LOW <= value < seed_generator.HIGH for value in final_values)
+    assert not set(final_values) & set(seed_generator._flatten(development))
+    assert not set(final_values) & set(seed_generator._flatten(old))
+
+
+def test_batch_sensitivity_validator_and_parameter_guards():
+    row = copy.deepcopy(_valid_rows()[3])
+    row["training_batch_size_cap"] = 256
+    row["h_prediction_change"] = float("nan")
+    row["q_prediction_change"] = float("nan")
+    batch_sensitivity._validate_row(row, scenario="S1", seed=123, batch_size=256)
+    bad = copy.deepcopy(row)
+    bad["D_total_mmr"] = float("inf")
+    with pytest.raises(RuntimeError, match="nonfinite"):
+        batch_sensitivity._validate_row(bad, scenario="S1", seed=123, batch_size=256)
+
+    oracle = copy.deepcopy(row)
+    oracle["oracle_ate_error"] = 0.0
+    with pytest.raises(RuntimeError, match="unexpected fields"):
+        batch_sensitivity._validate_row(oracle, scenario="S1", seed=123, batch_size=256)
+
+    source = {
+        "commit": "a" * 40,
+        "dirty": False,
+        "status_sha256": "b" * 64,
+        "worktree_content_sha256": "c" * 64,
+    }
+    expected = (
+        "S1",
+        123,
+        256,
+        "cuda:0",
+        source,
+        batch_sensitivity.EXPECTED_DEVELOPMENT_SEED_SHA256,
+    )
+    record = {
+        "program_id": batch_sensitivity.PROGRAM_ID,
+        "status": "ok",
+        "scenario": "S1",
+        "seed": 123,
+        "batch_size": 256,
+        "n": 1500,
+        "device": "cuda:0",
+        "source_state": source,
+        "seed_registry_sha256": batch_sensitivity.EXPECTED_DEVELOPMENT_SEED_SHA256,
+        "hamd_input_path": convergence.HAMD_PATH,
+        "hamd_input_sha256": convergence.HAMD_SHA256,
+        "convergence_decision_sha256": batch_sensitivity.EXPECTED_DECISION_SHA256,
+        "runtime_s": 1.0,
+        "environment": {"python": "test"},
+        "row": row,
+    }
+    batch_sensitivity._validate_shard(record, expected)
+    record["oracle_ate_error"] = 0.0
+    with pytest.raises(RuntimeError, match="unexpected fields"):
+        batch_sensitivity._validate_shard(record, expected)
+
+    start = dict(source)
+    end = dict(source, status_sha256="d" * 64, worktree_content_sha256="e" * 64)
+    assert batch_sensitivity._stable_source_identity(start) == (
+        batch_sensitivity._stable_source_identity(end)
+    )
+
+
+def test_batch_sensitivity_rejects_extra_raw_shard(tmp_path, monkeypatch):
+    monkeypatch.setattr(batch_sensitivity, "OUT", str(tmp_path))
+    task = ("S1", 123, 256, "cuda:0", {}, "a" * 64)
+    directory = tmp_path / "S1"
+    directory.mkdir()
+    path = directory / "seed123_batch256.json"
+    path.write_text("{}", encoding="utf-8")
+    (directory / "seed123_batch256.json.sha256").write_text("x", encoding="ascii")
+    digest, count = batch_sensitivity._validate_shard_inventory([task])
+    assert len(digest) == 64 and count == 2
+    (directory / "seed999_batch256.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="inventory"):
+        batch_sensitivity._validate_shard_inventory([task])
+    from opm.experiments.mvopm_round2.convergence_audit import audit_one
+
+    with pytest.raises(ValueError, match="budgets"):
+        audit_one("S1", 123, budgets=())
+    with pytest.raises(ValueError, match="batch_size"):
+        audit_one("S1", 123, budgets=(300,), batch_size=0)
 
 
 @pytest.mark.parametrize("checks", [0, -1])

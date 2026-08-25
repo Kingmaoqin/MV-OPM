@@ -36,6 +36,8 @@ results/mvopm_repaired_v1/final/R/
 results/mvopm_repaired_v1/**/result.json.lock
 results/mvopm_repaired_v1/**/result.json.sha256
 results/mvopm_repaired_v1/development/convergence_audit/*/seed*.json
+results/mvopm_repaired_v1/development/batch_sensitivity/*/seed*_batch*.json
+results/mvopm_repaired_v1/development/batch_sensitivity/*/seed*_batch*.json.sha256
 results/mvopm_repaired_v1/development/convergence_audit/*/seed*.json.sha256
 results/mvopm_repaired_v1/queue/*.log
 results/mvopm_repaired_v1/queue/*.lock
