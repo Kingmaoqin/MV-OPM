@@ -1,17 +1,17 @@
-[exact] seed 77000000 ok (1/16) 36s
-[exact] seed 77000001 ok (2/16) 64s
-[exact] seed 77000002 ok (3/16) 98s
-[exact] seed 77000003 ok (4/16) 129s
-[exact] seed 77000004 ok (5/16) 166s
-[exact] seed 77000005 ok (6/16) 202s
-[exact] seed 77000006 ok (7/16) 236s
-[exact] seed 77000007 ok (8/16) 265s
-[exact] seed 77000008 ok (9/16) 301s
-[exact] seed 77000009 ok (10/16) 335s
-[exact] seed 77000010 ok (11/16) 376s
-[exact] seed 77000011 ok (12/16) 414s
-[exact] seed 77000012 ok (13/16) 446s
-[exact] seed 77000013 ok (14/16) 480s
-[exact] seed 77000014 ok (15/16) 518s
-[exact] seed 77000015 ok (16/16) 553s
-[exact] FINISHED 16/16 in 553s
+[exact] seed 77000000 ok (1/16) 35s
+[exact] seed 77000001 ok (2/16) 63s
+[exact] seed 77000002 ok (3/16) 96s
+[exact] seed 77000003 ok (4/16) 127s
+[exact] seed 77000004 ok (5/16) 163s
+[exact] seed 77000005 ok (6/16) 197s
+[exact] seed 77000006 ok (7/16) 231s
+[exact] seed 77000007 ok (8/16) 260s
+[exact] seed 77000008 ok (9/16) 297s
+[exact] seed 77000009 ok (10/16) 331s
+[exact] seed 77000010 ok (11/16) 371s
+[exact] seed 77000011 ok (12/16) 410s
+[exact] seed 77000012 ok (13/16) 443s
+[exact] seed 77000013 ok (14/16) 477s
+[exact] seed 77000014 ok (15/16) 516s
+[exact] seed 77000015 ok (16/16) 552s
+[exact] FINISHED 16/16 in 552s

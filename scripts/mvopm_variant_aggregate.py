@@ -43,15 +43,24 @@ def _agg(df: pd.DataFrame) -> pd.Series:
     r = ev["oracle_ratio"].astype(float)
     reg = ev["regret"].astype(float)
     pr = ev["pehe_ratio"].astype(float)
+    # effect-size-normalized severity (primary, review-recommended); fall back gracefully if absent
+    nreg = ev["norm_regret"].astype(float) if "norm_regret" in ev else pd.Series(dtype=float)
+    nerr = ev["norm_error"].astype(float) if "norm_error" in ev else pd.Series(dtype=float)
+    ncat = ev["norm_catastrophic"].astype(float) if "norm_catastrophic" in ev else pd.Series(dtype=float)
     return pd.Series({
         "n": n,
         "abstain_rate": ab / n if n else np.nan,
+        # --- primary: normalized by true effect size ---
+        "median_norm_regret": nreg.median() if len(nreg) else np.nan,
+        "mean_norm_regret": nreg.mean() if len(nreg) else np.nan,
+        "median_norm_error": nerr.median() if len(nerr) else np.nan,
+        "norm_catastrophic_rate": ncat.mean() if len(ncat) else np.nan,
+        "median_abs_regret": reg.median(),
+        "median_abs_error": ev["error"].astype(float).median(),
+        # --- legacy oracle-ratio (denominator-inflated; kept for continuity) ---
         "median_oracle_ratio": r.median(),
         "mean_oracle_ratio": r.mean(),
         "p90_oracle_ratio": r.quantile(0.90),
-        "median_regret": reg.median(),
-        "mean_regret": reg.mean(),
-        "p90_regret": reg.quantile(0.90),
         "catastrophic_rate": ev["catastrophic"].astype(float).mean(),
         "top1_rate": ev["top1"].astype(float).mean(),
         "median_pehe_ratio": pr.median(),
@@ -77,7 +86,8 @@ def main():
     if sel.empty:
         raise SystemExit(f"no selector rows found in {d}")
 
-    order_by = "median_oracle_ratio"
+    # rank by effect-size-normalized regret when available (review fix), else legacy ratio
+    order_by = "median_norm_regret" if "norm_regret" in sel.columns else "median_oracle_ratio"
     pooled = sel.groupby("selector").apply(_agg, include_groups=False).sort_values(order_by)
     pooled.to_csv(os.path.join(d, "summary_pooled.csv"))
 
@@ -181,9 +191,11 @@ def main():
     with open(os.path.join(d, "EXPLORATORY_VARIANTS_REPORT.md"), "w") as f:
         f.write("\n".join(lines) + "\n")
     print("wrote summary_pooled.csv, summary_by_scenario.csv, EXPLORATORY_VARIANTS_REPORT.md")
-    print("\nPOOLED (median oracle ratio, catastrophic, top1, pehe_ratio, coverage):")
-    print(pooled[["median_oracle_ratio", "catastrophic_rate", "top1_rate",
-                  "median_pehe_ratio", "mean_ate_ci_coverage", "abstain_rate"]].round(3).to_string())
+    print("\nPOOLED (PRIMARY = effect-size-normalized regret; legacy oracle-ratio for reference):")
+    cols = [c for c in ["median_norm_regret", "norm_catastrophic_rate", "median_abs_regret",
+                        "median_oracle_ratio", "catastrophic_rate", "top1_rate",
+                        "median_pehe_ratio"] if c in pooled.columns]
+    print(pooled[cols].round(3).to_string())
 
 
 if __name__ == "__main__":

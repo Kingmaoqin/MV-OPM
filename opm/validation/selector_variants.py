@@ -118,10 +118,15 @@ def mses_varcap(feat: Dict[str, dict], *, alpha: float = 0.05, tau: float = 3.0)
     med = float(np.median([feat[n]["var"] for n in names]))
     survivors = _screen_survivors(feat, alpha)
     capped = [n for n in survivors if feat[n]["var"] <= tau * med + EPS]
-    pool = capped or survivors
-    if not pool:
-        return variance_only(feat)  # graceful fallback, never abstain
-    return min(pool, key=lambda n: (feat[n]["var"], n))
+    if not capped:
+        # The screen rejected everyone, OR every survivor exceeds the variance cap (the D2 case,
+        # where the only survivors are high-variance over-fit sieves). Either way, degrade to the
+        # GLOBAL minimum-variance candidate -- matching the documented intent. NOTE: an earlier
+        # version fell back to the uncapped survivor set (`pool = capped or survivors`), which made
+        # the cap toothless in exactly the regime it targets and left mses_varcap identical to MSES;
+        # that was a bug fixed after the Round-3 code review.
+        return variance_only(feat)
+    return min(capped, key=lambda n: (feat[n]["var"], n))
 
 
 def product_moment(feat: Dict[str, dict]) -> str:

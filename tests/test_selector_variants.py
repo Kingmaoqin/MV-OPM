@@ -76,6 +76,28 @@ def test_varcap_falls_back_not_abstain():
     assert sv.mses_varcap(feat, alpha=0.05, tau=3.0) == sv.variance_only(feat)
 
 
+def test_varcap_falls_back_to_global_when_survivors_all_exceed_cap():
+    """D2 regime: the screen keeps only high-variance survivors, all above the cap. The fixed
+    mses_varcap must degrade to the GLOBAL minimum-variance candidate, NOT pick among the
+    high-variance survivors (the pre-review bug). Regression test for Round-3 review finding B-M2."""
+    feat = {n: copy.deepcopy(r) for n, r in _toy_feat().items()}
+    # Mirror the real nonlinear structure: the good low-variance candidates are screened OUT
+    # (jointly incompatible), leaving only a high-variance over-fit sieve as the sole survivor,
+    # far above 3x the (low) median variance.
+    for n in ("kernel_kernel", "sieve1_sieve1", "sieve3_sieve3"):
+        feat[n]["p_h"] = [0.0001, 0.50]
+        feat[n]["p_q"] = [0.0002, 0.50]
+    feat["kernel_kernel"]["var"] = 0.005            # global minimum variance
+    feat["sieve1_sieve1"]["var"] = 0.020
+    feat["sieve3_sieve3"]["var"] = 0.030
+    feat["sieve2_sieve2"]["p_h"] = [0.90, 0.90]     # the only survivor, high variance
+    feat["sieve2_sieve2"]["p_q"] = [0.90, 0.90]
+    feat["sieve2_sieve2"]["var"] = 5.0
+    survivors = sv._screen_survivors(feat, 0.05)
+    assert survivors == ["sieve2_sieve2"], f"test setup: expected only sieve2 to survive, got {survivors}"
+    assert sv.mses_varcap(feat, alpha=0.05, tau=3.0) == "kernel_kernel"   # global min-var fallback
+
+
 def test_q_gate_rejects_pathological_q_despite_low_variance():
     """sieve3 has the lowest variance but a pathological q-normalization; the q-gate must avoid it
     even though variance_only would take it."""

@@ -76,6 +76,10 @@ def run_seed(scenario: str, n: int, seed: int, n_boot: int, alpha: float) -> lis
     best_pehe = float(np.nanmin(pehe))
     oracle_best = names[int(np.nanargmin(ate_err))]
     ate_true = np.asarray(ds.ate_true, float).reshape(-1)
+    # Effect-size scale for NORMALIZED severity (Round-3 review fix): the raw oracle_ratio divides
+    # by a near-zero oracle-best error and is unnormalized by the true effect, so it inflates
+    # severity. abs regret / mean|ATE| is comparable across scenarios of different effect size.
+    effect_scale = float(np.mean(np.abs(ate_true))) or 1.0
 
     feat = _features(rows)
     registry = build_registry(alpha=alpha)
@@ -85,9 +89,10 @@ def run_seed(scenario: str, n: int, seed: int, n_boot: int, alpha: float) -> lis
         rec = {"scenario": scenario, "seed": int(seed), "n": int(n), "K": int(ds.K),
                "selector": sname, "chosen": chosen, "oracle_best": oracle_best,
                "oracle_best_error": best_err, "oracle_best_pehe": best_pehe,
-               "abstained": chosen == ABSTAIN}
+               "effect_scale": effect_scale, "abstained": chosen == ABSTAIN}
         if chosen == ABSTAIN:
             rec.update({"error": None, "regret": None, "oracle_ratio": None,
+                        "norm_regret": None, "norm_error": None, "norm_catastrophic": None,
                         "catastrophic": None, "top1": 0, "pehe": None, "pehe_ratio": None,
                         "pehe_catastrophic": None, "coverage": None, "max_q": None,
                         "ess": None, "q_balance": None, "complexity": None})
@@ -99,6 +104,10 @@ def run_seed(scenario: str, n: int, seed: int, n_boot: int, alpha: float) -> lis
                 "error": err,
                 "regret": err - best_err,
                 "oracle_ratio": err / (best_err + 1e-12),
+                # effect-size-normalized severity (primary, review-recommended headline)
+                "norm_error": err / effect_scale,
+                "norm_regret": (err - best_err) / effect_scale,
+                "norm_catastrophic": int((err - best_err) / effect_scale > 0.25),
                 "catastrophic": int(err > CATASTROPHIC * best_err),
                 "top1": int(chosen == oracle_best),
                 "pehe": ph,
@@ -122,6 +131,7 @@ def run_seed(scenario: str, n: int, seed: int, n_boot: int, alpha: float) -> lis
                                        for nm in names},
                 "candidate_q_balance": {nm: float(rows[nm]["q_balance"]) for nm in names},
                 "candidate_max_q": {nm: float(rows[nm]["max_q"]) for nm in names},
+                "ate_true": ate_true.tolist(), "effect_scale": effect_scale,
                 "oracle_best": oracle_best})
     return out
 

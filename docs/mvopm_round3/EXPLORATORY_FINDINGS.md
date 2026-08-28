@@ -1,5 +1,18 @@
 # Round-3 exploratory selector study — findings
 
+> **POST-REVIEW CORRECTIONS (2026-08-28).** Two independent code/design reviews audited this study;
+> see [CODE_REVIEW_RECONCILIATION.md](CODE_REVIEW_RECONCILIATION.md). Net: the pipeline and DGPs are
+> correct (no result-corrupting bug; datasets not degenerate), and the failures are genuine in
+> absolute terms — BUT three things in an earlier version of this doc were wrong and are corrected
+> below: (1) **severity was overstated** — the `oracle_ratio` / "catastrophic>1.5×" metric is
+> denominator-inflated and unnormalized by effect size; the PRIMARY metric is now
+> `norm_regret = regret / mean|ATE|` and a `norm_catastrophic` flag (regret > 0.25×effect). Several
+> "5×/90% catastrophic" cases are benign (e.g. `variance_only` in `exact`: norm_regret 0.126,
+> norm-catastrophic 0.000). (2) **`mses_varcap` had a fallback BUG** (fixed): it now repairs the
+> nonlinear catastrophe (norm_regret 0.001) rather than being ≡MSES. (3) the moment-screen mechanism
+> is reframed: it is a **studentized-test power/variance confound used as a hard gate**, not an
+> intrinsic anti-correlation of identifying moments (the test itself is correctly calibrated).
+
 **Status: EXPLORATORY. Fresh seeds only (base 77,000,000), disjoint from the Round-2 confirmatory
 final seeds. Nothing here is tuned on the confirmatory seeds, and nothing here alters the frozen
 Round-2 verdict (`NOT_SUPPORTED`).** This study characterises *why* the Round-2 selector failed and
@@ -61,8 +74,17 @@ Spearman ρ between each candidate selection score and its true ATE error, poole
 | nonlinear | 0.654 | **−0.582** | **0.613** | 0.569 |
 
 - **Variance** fails in hamd (0.083 — nearly useless).
-- **Moment-violation** (the MSES screen's signal) *flips sign*: strongly anti-informative in
-  nonlinear (−0.582), null in S1/S2, informative only in exact/hamd.
+- **Moment-violation** (the MSES screen's p-value signal) *flips sign*: strongly anti-informative in
+  nonlinear (−0.582), null in S1/S2, informative only in exact/hamd. **Mechanism (post-review
+  correction):** this is not an intrinsic property of identifying moments. The studentized moment
+  test's *power* is confounded with residual variance — a wildly over-fit candidate has enormous
+  residual variance and so its moment violation is statistically undetectable (high p, "compatible"),
+  while a precise candidate's tiny remaining bias is detectable (low p). So in `nonlinear`, where the
+  bad candidates are the high-variance over-fit sieves, "moment-compatible" ≈ "high-variance
+  over-fit" ≈ "high-error", producing the negative ρ. The moment test itself is correctly calibrated
+  (uniform p under the true bridge); the pathology is *using a studentized test as a hard screen*,
+  where pass/fail tracks precision rather than bias. See
+  [CODE_REVIEW_RECONCILIATION.md](CODE_REVIEW_RECONCILIATION.md) §disagreement.
 - **`q_balance`** — the observable treatment-bridge self-normalization moment
   `|E_n[1{T=k} q_k] − 1|`, which needs no counterfactual truth — is **positively informative in all
   five regimes (0.27–0.64)**, including exactly the two regimes where the other signals fail.
@@ -78,16 +100,27 @@ signal**; every single-signal rule and every hard-gate rule has a catastrophe re
 honest robustness criterion — the *worst* per-regime median (a robust rule has no regime where it
 blows up):
 
+*(The `median` / `catastrophic` columns below are the LEGACY denominator-inflated oracle-ratio metric,
+kept for continuity; the primary effect-size-normalized numbers are in `summary_pooled.csv` and the
+banner. The qualitative ranking is unchanged, and `mses_varcap` is shown POST-FIX.)*
+
 | selector | pooled median | pooled catastrophic | **worst-regime median** | worst-regime cat |
 |---|---:|---:|---:|---:|
 | soft_screen[λ=1.0]  (var + moment, soft) | 1.350 | 0.438 | **1.514** | 0.562 |
 | biasvar_mult  (var + RFF-discrepancy) | 1.379 | 0.450 | **1.595** | 0.625 |
 | varq_moment_combo  (var + q_balance + moment) | 1.395 | 0.463 | **1.689** | 0.688 |
+| **mses_varcap[τ=3] (screen→cap→var, FIXED)** | 1.416 | 0.488 | **2.376** (S2) | 0.688 |
 | rank_sum  (var + moment ranks) | 1.354 | 0.450 | 2.018 | 0.688 |
 | varq_combo  (var + q_balance) | 1.768 | 0.562 | **5.408** (exact) | 0.875 |
 | variance_only | 2.512 | 0.662 | **5.408** (exact/hamd) | 1.000 |
 | min_q_balance | 1.947 | 0.588 | 5.408 (exact) | 0.812 |
-| MSES / mses_varcap (moment, hard gate) | 1.866 | 0.600 | **44.06** (nonlinear) | 0.938 |
+| MSES  (moment, HARD gate) | 1.866 | 0.600 | **44.06** (nonlinear) | 0.938 |
+
+Note: after the fallback-bug fix, `mses_varcap` no longer tracks MSES — it degrades to global
+minimum-variance when the cap empties the survivor set, so it avoids the nonlinear catastrophe
+(worst-regime 2.38 instead of 44.06) and joins the robust soft-rule tier. This is itself an instance
+of the headline: converting the moment screen from a decisive gate into a *defeasible* one (fall back
+to variance) removes its catastrophe.
 
 Reading:
 
@@ -111,10 +144,14 @@ Reading:
 
 ## 5. Finding 4 — non-primary metrics
 
-- **`mses_varcap` failed** (numerically identical to MSES). The nonlinear catastrophic survivors are
-  *low*-OOF-variance (the "variance-blindness of normalized moments"), so a variance cap on the
-  survivor set never triggers. Capping variance cannot fix a screen that admits low-variance,
-  high-error candidates.
+- **`mses_varcap` — CORRECTED.** An earlier version reported it "failed (≡MSES)" and attributed this
+  to the catastrophic survivors being *low*-variance. Both claims were wrong: the nonlinear
+  catastrophic survivors are *high*-variance (sieve2/3 OOF variance ≈ 52k/70k), and the equivalence
+  to MSES was a **fallback bug** (`pool = capped or survivors` fell back to the survivor set, not the
+  global minimum-variance candidate its docstring promised). After the fix, when the variance cap
+  empties the survivor set `mses_varcap` degrades to global minimum-variance, and it **repairs the
+  nonlinear catastrophe**: nonlinear norm_regret 0.001 (oracle-ratio 44.06 → 1.157), other scenarios
+  unchanged. See the review reconciliation for the regression test.
 - **CATE/PEHE.** ATE-oracle and PEHE-oracle are usually *different candidates* (P(match) = 0.12–0.38
   across regimes), so ATE-level selection is not a reliable CATE selector — consistent with the
   Round-2 caution that the MSES criterion (ATE-influence variance) is not aligned with PEHE. The
